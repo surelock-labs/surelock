@@ -33,7 +33,6 @@ const eth  = (wei: bigint) => ethers.formatEther(wei) + " ETH";
 const gwei = (wei: bigint) => ethers.formatUnits(wei, "gwei") + " gwei";
 // withRetry imported from @surelock-labs/bundler -- handles "header not found" on load-balanced nodes
 
-const DEMO_BUNDLER_SEED = "surelock mpt settle demo bundler v1 base sepolia";
 const DEMO_FEE_WEI      = ethers.parseUnits("5000", "gwei"); // 5000 gwei -- above bundler break-even (~2700 gwei at 0.01 gwei basefee)
 const DEMO_COLL_WEI     = DEMO_FEE_WEI + 1n;                // strictly > feePerOp (T8); minimal for testnet
 const DEMO_SLA_BLOCKS   = 100;                               // generous -- settle before deadline
@@ -77,8 +76,7 @@ async function main() {
 
     const signerPk = process.env["PRIVATE_KEY"]!;
     const signerWallet  = new ethers.Wallet(signerPk, provider);
-    const bundlerPk     = ethers.keccak256(ethers.toUtf8Bytes(DEMO_BUNDLER_SEED));
-    const bundlerWallet = new ethers.Wallet(bundlerPk, provider);
+    const bundlerWallet = new ethers.Wallet(signerPk, provider);
 
     // Clear any stuck pending txs before wrapping in NonceManager
     await drainPendingTxs(signerWallet);

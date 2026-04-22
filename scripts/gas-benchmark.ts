@@ -45,9 +45,6 @@ async function waitForBlock(provider: ethers.Provider, targetBlock: number, labe
     }
 }
 
-// Deterministic demo bundler -- same wallet as demo-sepolia.ts
-const DEMO_BUNDLER_SEED = "surelock demo bundler v1 base sepolia";
-
 // Benchmark offer parameters (same as demo -- kept tiny for cheap runs)
 const BENCH_FEE_WEI  = ethers.parseUnits("1", "gwei");
 const BENCH_COLL_WEI = BENCH_FEE_WEI + 1n;
@@ -141,8 +138,7 @@ async function main() {
     const { chainId } = await ethers.provider.getNetwork();
     const deployment = loadDeployment(chainId);
 
-    const bundlerPk = ethers.keccak256(ethers.toUtf8Bytes(DEMO_BUNDLER_SEED));
-    const bundler   = new ethers.Wallet(bundlerPk, ethers.provider);
+    const bundler   = new ethers.Wallet(process.env["PRIVATE_KEY"]!, ethers.provider);
 
     console.log(`\nNetwork:  ${deployment.network} (chainId ${chainId})`);
     console.log(`Signer:   ${signer.address}`);

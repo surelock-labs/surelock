@@ -43,9 +43,6 @@ async function waitForBlock(provider: ethers.Provider, targetBlock: number, labe
     }
 }
 
-// Deterministic demo bundler -- same address reused across runs.
-const DEMO_BUNDLER_SEED = "surelock demo bundler v1 base sepolia";
-
 // Demo offer parameters -- realistic fee (covers bundler gas cost on Base), minimal collateral.
 const DEMO_FEE_WEI     = ethers.parseUnits("5000", "gwei"); // 5000 gwei -- above bundler break-even (~2700 gwei at 0.01 gwei basefee)
 const DEMO_COLL_WEI    = DEMO_FEE_WEI + 1n;                // strictly > feePerOp (T8); minimal for testnet
@@ -60,8 +57,8 @@ async function main() {
     const { chainId } = await ethers.provider.getNetwork();
     const deployment = loadDeployment(chainId);
 
-    // Deterministic ephemeral bundler wallet
-    const bundlerPk = ethers.keccak256(ethers.toUtf8Bytes(DEMO_BUNDLER_SEED));
+    // Bundler wallet: same key as signer -- one wallet plays both roles on testnet.
+    const bundlerPk = process.env["PRIVATE_KEY"]!;
     const bundler   = new ethers.Wallet(bundlerPk, ethers.provider);
 
     console.log(`\nNetwork:     ${deployment.network} (chainId ${chainId})`);
