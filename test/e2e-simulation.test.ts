@@ -9,9 +9,9 @@
 
 import { expect }   from "chai";
 import { ethers } from "hardhat";
-import { mine, loadFixture, time } from "@nomicfoundation/hardhat-network-helpers";
+import { mine, loadFixture } from "@nomicfoundation/hardhat-network-helpers";
 
-import { fetchQuotes, selectBest } from "@surelock-labs/router";
+import { fetchQuotes, selectBest, commitOp, cancel as sdkCancel, claimRefund as sdkClaimRefund, claimPayout as sdkUserClaimPayout } from "@surelock-labs/router";
 import {
   register, deregister, deposit, withdraw,
   claimPayout, getCommit, getIdleBalance, getDeposited,
@@ -72,23 +72,35 @@ async function doCommit(
   fee?: bigint,
 ): Promise<bigint> {
   const userOp = ethers.keccak256(ethers.toUtf8Bytes(tag));
+  const escrowAddress = await escrow.getAddress();
   const reg = await ethers.getContractAt("QuoteRegistry", await escrow.registry());
   const offer = await reg.getOffer(quoteId);
-  const protocolFee = BigInt(await escrow.protocolFeeWei());
-  const tx = await escrow.connect(user).commit(quoteId, userOp, offer.bundler, offer.collateralWei, offer.slaBlocks, { value: fee ?? (offer.feePerOp + protocolFee) });
-  const receipt = await tx.wait();
-  const commitLogs = receipt!.logs
-    .filter(l => l.topics[0] === escrow.interface.getEvent("CommitCreated")!.topicHash)
-    .map(l => escrow.interface.parseLog(l)!);
-  if (commitLogs.length === 0) throw new Error("CommitCreated not emitted");
-  const commitId = BigInt(commitLogs[0].args.commitId);
 
-  // Two-phase commit: bundler must accept() to transition PROPOSED -> ACTIVE
+  let commitId: bigint;
+  if (fee === undefined) {
+    const res = await commitOp(user, escrowAddress, {
+      quoteId,
+      bundler:       offer.bundler as string,
+      feePerOp:      BigInt(offer.feePerOp),
+      slaBlocks:     Number(offer.slaBlocks),
+      collateralWei: BigInt(offer.collateralWei),
+      active:        true,
+    }, userOp);
+    commitId = res.commitId;
+  } else {
+    const tx = await escrow.connect(user).commit(quoteId, userOp, offer.bundler, offer.collateralWei, offer.slaBlocks, { value: fee });
+    const receipt = await tx.wait();
+    const log = receipt!.logs
+      .map((l: any) => { try { return escrow.interface.parseLog(l); } catch { return null; } })
+      .find((e: any) => e?.name === "CommitCreated");
+    if (!log) throw new Error("CommitCreated not emitted");
+    commitId = BigInt(log.args.commitId);
+  }
+
   const allSigners = await ethers.getSigners();
-  const bundlerSigner = allSigners.find(s => s.address.toLowerCase() === offer.bundler.toLowerCase());
+  const bundlerSigner = allSigners.find(s => s.address.toLowerCase() === (offer.bundler as string).toLowerCase());
   if (bundlerSigner) {
-    const esc2 = await ethers.getContractAt("SLAEscrowTestable", await escrow.getAddress());
-    await esc2.connect(bundlerSigner).accept(commitId);
+    await accept(bundlerSigner, escrowAddress, commitId);
   }
 
   return commitId;
@@ -163,7 +175,7 @@ describe("Scenario 2: SLA miss -- bundler misses deadline, user gets refund + sl
     const bundlerDepBefore = await getDeposited(ethers.provider, escrowAddress, bundlerA.address);
 
     // User claims refund
-    await escrow.connect(user1).claimRefund(commitId);
+    await sdkClaimRefund(user1, escrowAddress, commitId);
 
     const bundlerDepAfter = await getDeposited(ethers.provider, escrowAddress, bundlerA.address);
 
@@ -331,7 +343,7 @@ describe("Scenario 7: idempotency guards", () => {
 
     // Mine past grace (deadline + sg + rg + 1)
     await mineToRefundable(escrow, commitId);
-    await expect(escrow.connect(user1).claimRefund(commitId)).to.be.rejectedWith("AlreadyFinalized");
+    await expect(sdkClaimRefund(user1, escrowAddress, commitId)).to.be.rejectedWith("AlreadyFinalized");
   });
 
   it("user cannot claim refund twice", async () => {
@@ -346,8 +358,8 @@ describe("Scenario 7: idempotency guards", () => {
     const rg = BigInt(await escrow.REFUND_GRACE_BLOCKS());
     await mine(Number(info.deadline - currentBlock + sg + rg + 1n));
 
-    await escrow.connect(user1).claimRefund(commitId);
-    await expect(escrow.connect(user1).claimRefund(commitId)).to.be.rejectedWith("AlreadyFinalized");
+    await sdkClaimRefund(user1, escrowAddress, commitId);
+    await expect(sdkClaimRefund(user1, escrowAddress, commitId)).to.be.rejectedWith("AlreadyFinalized");
   });
 });
 
@@ -361,7 +373,7 @@ describe("Scenario 8: refund timing boundaries", () => {
 
     const commitId = await doCommit(escrow, user1, quoteId, "too-early-refund");
     // No mining -- still within SLA window
-    await expect(escrow.connect(user1).claimRefund(commitId)).to.be.rejectedWith("NotExpired");
+    await expect(sdkClaimRefund(user1, escrowAddress, commitId)).to.be.rejectedWith("NotExpired");
   });
 
   it("bundler cannot settle after deadline", async () => {
@@ -559,12 +571,12 @@ describe("Scenario 13: ETH accounting invariant holds throughout full lifecycle"
     const sg = BigInt(await escrow.SETTLEMENT_GRACE_BLOCKS());
     const rg = BigInt(await escrow.REFUND_GRACE_BLOCKS());
     await mine(Number(info.deadline - cur + sg + rg + 1n));
-    await escrow.connect(user2).claimRefund(c2);
+    await sdkClaimRefund(user2, escrowAddress, c2);
     await checkInvariant(escrow, parties, bundlers);
 
     await claimPayout(bundlerA, escrowAddress);
     await claimPayout(feeRecipient, escrowAddress);
-    await escrow.connect(user2).claimPayout();
+    await sdkUserClaimPayout(user2, escrowAddress);
     await checkInvariant(escrow, parties, bundlers);
   });
 
@@ -594,7 +606,7 @@ describe("Scenario 13: ETH accounting invariant holds throughout full lifecycle"
     await checkInvariant(escrow, parties, bundlers);
 
     // User cancels during accept window
-    await escrow.connect(user1).cancel(commitId);
+    await sdkCancel(user1, escrowAddress, commitId);
     // Cancelled commit must NOT count as open fees -- invariant still holds
     await checkInvariant(escrow, parties, bundlers);
   });
@@ -689,7 +701,7 @@ describe("Scenario 15: protocol fee accounting on cancel and refund paths", () =
     // feeRecipient already has PROTOCOL_FEE from commit
     expect(await escrow.pendingWithdrawals(feeRecipient.address)).to.equal(PROTOCOL_FEE);
 
-    await escrow.connect(user1).cancel(commitId);
+    await sdkCancel(user1, escrowAddress, commitId);
 
     // User gets feePerOp back -- NOT the protocol fee (T4)
     expect(await escrow.pendingWithdrawals(user1.address)).to.equal(ONE_GWEI);
@@ -714,7 +726,7 @@ describe("Scenario 15: protocol fee accounting on cancel and refund paths", () =
     const cur = BigInt(await ethers.provider.getBlockNumber());
     await mine(Number(BigInt(info.deadline) - cur + sg + rg + 1n));
 
-    await escrow.connect(user1).claimRefund(commitId);
+    await sdkClaimRefund(user1, escrowAddress, commitId);
 
     // User gets feePerOp + collateral (T11)
     expect(await escrow.pendingWithdrawals(user1.address)).to.equal(ONE_GWEI + COLLATERAL);
@@ -755,7 +767,7 @@ describe("Scenario 16: PROPOSED-state lifecycle -- cancel before and after accep
     const commitId = await commitWithoutAccept(escrow, user1, quoteId, "s16-client-cancel");
 
     // Cancel immediately -- still within accept window, no collateral ever locked
-    await escrow.connect(user1).cancel(commitId);
+    await sdkCancel(user1, escrowAddress, commitId);
 
     const info = await getCommit(ethers.provider, escrowAddress, commitId);
     expect(info.cancelled).to.be.true;

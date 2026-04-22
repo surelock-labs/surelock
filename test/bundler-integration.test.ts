@@ -5,6 +5,7 @@ import { expect }   from "chai";
 import { ethers }   from "hardhat";
 import { mine, loadFixture } from "@nomicfoundation/hardhat-network-helpers";
 import type { PendingCommit } from "@surelock-labs/bundler";
+import { commitOp as routerCommitOp, cancel as sdkCancel, claimRefund as sdkClaimRefund } from "@surelock-labs/router";
 
 import {
   register,
@@ -691,7 +692,7 @@ describe("PROTOCOL_FEE_WEI > 0 economics", () => {
       .find((e: any) => e?.name === "CommitCreated");
     const commitId = BigInt(log!.args.commitId);
 
-    await fix.escrow.connect(fix.user).cancel(commitId);
+    await sdkCancel(fix.user, fix.escrowAddress, commitId);
 
     expect(await fix.escrow.pendingWithdrawals(fix.user.address)).to.equal(ONE_GWEI);
     expect(await fix.escrow.pendingWithdrawals(fix.feeRecipient.address)).to.equal(FLAT_FEE);
@@ -715,7 +716,7 @@ describe("PROTOCOL_FEE_WEI > 0 economics", () => {
     const escrowTestable = await ethers.getContractAt("SLAEscrowTestable", fix.escrowAddress);
     await escrowTestable.connect(fix.bundler).accept(commitId);
     await mineToRefundable(fix.escrow, commitId);
-    await fix.escrow.connect(fix.user).claimRefund(commitId);
+    await sdkClaimRefund(fix.user, fix.escrowAddress, commitId);
 
     expect(await fix.escrow.pendingWithdrawals(fix.user.address)).to.equal(ONE_GWEI + COLLATERAL);
     expect(await fix.escrow.pendingWithdrawals(fix.feeRecipient.address)).to.equal(FLAT_FEE);
@@ -759,19 +760,18 @@ describe("cancel / claimRefund cleanup flows", () => {
   }
 
   async function commitOp(fix: Awaited<ReturnType<typeof setupOffer>>, tag: string) {
-    const escrow   = await ethers.getContractAt("SLAEscrow", fix.escrowAddress);
     const registry = await ethers.getContractAt("QuoteRegistry", fix.registryAddress);
     const offer    = await registry.getOffer(fix.quoteId);
     const userOp   = ethers.keccak256(ethers.toUtf8Bytes(tag));
-    const tx = await escrow.connect(fix.user).commit(
-      fix.quoteId, userOp, offer.bundler, offer.collateralWei, offer.slaBlocks,
-      { value: offer.feePerOp },
-    );
-    const receipt = await tx.wait();
-    const log = receipt!.logs
-      .map((l: any) => { try { return escrow.interface.parseLog(l); } catch { return null; } })
-      .find((e: any) => e?.name === "CommitCreated");
-    return BigInt(log!.args.commitId);
+    const res = await routerCommitOp(fix.user, fix.escrowAddress, {
+      quoteId:       fix.quoteId,
+      bundler:       offer.bundler as string,
+      feePerOp:      BigInt(offer.feePerOp),
+      slaBlocks:     Number(offer.slaBlocks),
+      collateralWei: BigInt(offer.collateralWei),
+      active:        true,
+    }, userOp);
+    return res.commitId;
   }
 
   it("client can cancel a PROPOSED commit during the accept window", async () => {
@@ -779,7 +779,7 @@ describe("cancel / claimRefund cleanup flows", () => {
     const commitId = await commitOp(fix, "cancel-proposed");
     const escrow = await ethers.getContractAt("SLAEscrow", fix.escrowAddress);
 
-    await escrow.connect(fix.user).cancel(commitId);
+    await sdkCancel(fix.user, fix.escrowAddress, commitId);
 
     const info = await getCommit(ethers.provider, fix.escrowAddress, commitId);
     expect(info.cancelled).to.be.true;
@@ -795,7 +795,7 @@ describe("cancel / claimRefund cleanup flows", () => {
     const escrow = await ethers.getContractAt("SLAEscrow", fix.escrowAddress);
 
     await mine(Number(await escrow.ACCEPT_GRACE_BLOCKS()) + 1);
-    await escrow.connect(fix.bundler).cancel(commitId);
+    await sdkCancel(fix.bundler, fix.escrowAddress, commitId);
 
     const info = await getCommit(ethers.provider, fix.escrowAddress, commitId);
     expect(info.cancelled).to.be.true;
@@ -810,7 +810,7 @@ describe("cancel / claimRefund cleanup flows", () => {
 
     await escrowTestable.connect(fix.bundler).accept(commitId);
     await mineToRefundable(fix.escrow, commitId);
-    await escrow.connect(fix.user).claimRefund(commitId);
+    await sdkClaimRefund(fix.user, fix.escrowAddress, commitId);
 
     expect(await escrow.pendingWithdrawals(fix.user.address)).to.equal(ONE_GWEI + COLLATERAL);
     expect(await getIdleBalance(ethers.provider, fix.escrowAddress, fix.bundler.address)).to.equal(0n);
