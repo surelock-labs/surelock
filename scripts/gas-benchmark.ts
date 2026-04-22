@@ -138,7 +138,9 @@ async function main() {
     const { chainId } = await ethers.provider.getNetwork();
     const deployment = loadDeployment(chainId);
 
-    const bundler   = new ethers.Wallet(process.env["PRIVATE_KEY"]!, ethers.provider);
+    const bundlerPk = process.env["BUNDLER_KEY"];
+    if (!bundlerPk) throw new Error("BUNDLER_KEY env var required -- use: surelock exec --key deployer --bundler-key demo-bundler -- ...");
+    const bundler   = new ethers.Wallet(bundlerPk, ethers.provider);
 
     console.log(`\nNetwork:  ${deployment.network} (chainId ${chainId})`);
     console.log(`Signer:   ${signer.address}`);
@@ -147,6 +149,7 @@ async function main() {
     const escrow   = await ethers.getContractAt("SLAEscrow",     deployment.escrow)    as any;
     const registry = await ethers.getContractAt("QuoteRegistry", deployment.registry) as any;
 
+    // Separate nonce counters -- signer (user) and bundler are different addresses.
     let userNonce    = await ethers.provider.getTransactionCount(signer.address,  "latest");
     let bundlerNonce = await ethers.provider.getTransactionCount(bundler.address, "latest");
     const GAS = {
@@ -215,7 +218,7 @@ async function main() {
     const bond    = await registry.registrationBond() as bigint;
     const minLt   = await registry.MIN_LIFETIME()     as bigint;
 
-    // Fund bundler if needed
+    // Fund bundler if it doesn't have enough for the bond + gas.
     const bundlerBal = await ethers.provider.getBalance(bundler.address);
     const needed     = bond + ethers.parseEther("0.003");
     if (bundlerBal < needed) {

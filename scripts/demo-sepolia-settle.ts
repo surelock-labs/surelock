@@ -31,7 +31,22 @@ const ok   = (s: string) => console.log(`  v ${s}`);
 const info = (k: string, v: string) => console.log(`  ${k.padEnd(22)}: ${v}`);
 const eth  = (wei: bigint) => ethers.formatEther(wei) + " ETH";
 const gwei = (wei: bigint) => ethers.formatUnits(wei, "gwei") + " gwei";
-// withRetry imported from @surelock-labs/bundler -- handles "header not found" on load-balanced nodes
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+// withRetry from the bundler package only checks the top-level error message.
+// pinRead also checks e.info.error.message, which is where ethers buries the
+// underlying JSON-RPC "block not found" on load-balanced nodes.
+async function pinRead<T>(fn: () => Promise<T>, retries = 6, delayMs = 2000): Promise<T> {
+    for (let i = 0; ; i++) {
+        try { return await fn(); }
+        catch (e: any) {
+            if (i >= retries) throw e;
+            const s = `${String(e)} ${JSON.stringify(e?.info ?? {})}`;
+            if (!/header not found|block not found/i.test(s)) throw e;
+            await sleep(delayMs);
+        }
+    }
+}
 
 const DEMO_FEE_WEI      = ethers.parseUnits("5000", "gwei"); // 5000 gwei -- above bundler break-even (~2700 gwei at 0.01 gwei basefee)
 const DEMO_COLL_WEI     = DEMO_FEE_WEI + 1n;                // strictly > feePerOp (T8); minimal for testnet
@@ -74,15 +89,16 @@ async function main() {
     const provider = new ethers.JsonRpcProvider(rpcUrl);
     const { chainId } = await provider.getNetwork();
 
-    const signerPk = process.env["PRIVATE_KEY"]!;
+    const signerPk  = process.env["PRIVATE_KEY"]!;
+    const bundlerPk = process.env["BUNDLER_KEY"];
+    if (!bundlerPk) throw new Error("BUNDLER_KEY env var required -- use: surelock exec --key deployer --bundler-key demo-bundler -- ...");
     const signerWallet  = new ethers.Wallet(signerPk, provider);
-    const bundlerWallet = new ethers.Wallet(signerPk, provider);
+    const bundlerWallet = new ethers.Wallet(bundlerPk, provider);
 
-    // Clear any stuck pending txs before wrapping in NonceManager
     await drainPendingTxs(signerWallet);
     await drainPendingTxs(bundlerWallet);
 
-    // NonceManager tracks nonces locally -- avoids stale RPC state on load-balanced nodes.
+    // Separate NonceManagers -- signer and bundler are different addresses.
     const signer  = new ethers.NonceManager(signerWallet);
     const bundler = new ethers.NonceManager(bundlerWallet);
 
@@ -129,13 +145,9 @@ async function main() {
 
     const needed = DEMO_BOND + DEMO_COLL_WEI + ethers.parseEther("0.002");
     const bundlerBal = await provider.getBalance(bundlerWallet.address);
-    if (bundlerBal < needed) {
-        const topUp = needed - bundlerBal;
-        await (await signer.sendTransaction({ to: bundlerWallet.address, value: topUp, ...UT() })).wait();
-        ok(`Funded bundler with ${eth(topUp)}`);
-    } else {
-        ok(`Bundler already funded (${eth(bundlerBal)})`);
-    }
+    if (bundlerBal < needed)
+        throw new Error(`Insufficient bundler balance: have ${eth(bundlerBal)}, need ${eth(needed)}`);
+    ok(`Bundler balance sufficient (${eth(bundlerBal)})`);
 
     const regTx = await (registry as any).connect(bundler).register(
         DEMO_FEE_WEI, DEMO_SLA_BLOCKS, DEMO_COLL_WEI, 302_400,
@@ -156,7 +168,7 @@ async function main() {
     STEP("4", "User commits a UserOp");
 
     const userOpHash = ethers.keccak256(ethers.toUtf8Bytes(`surelock-mpt-test-${Date.now()}`));
-    const commitId   = BigInt(await withRetry(() => (escrow as any).nextCommitId()));
+    const commitId   = BigInt(await pinRead(() => (escrow as any).nextCommitId()));
 
     const commitTx   = await (escrow as any).connect(signer).commit(
         quoteId, userOpHash, bundlerWallet.address, DEMO_COLL_WEI, DEMO_SLA_BLOCKS,
@@ -164,7 +176,7 @@ async function main() {
     );
     const commitRcpt = await commitTx.wait();
 
-    const c0 = await withRetry(() =>
+    const c0 = await pinRead(() =>
         (escrow as any).getCommit(commitId, { blockTag: commitRcpt!.blockNumber }),
     );
     info("commitId", commitId.toString());
@@ -178,7 +190,7 @@ async function main() {
     const acceptTx   = await (escrow as any).connect(bundler).accept(commitId, BT({ gasLimit: 300_000 }));
     const acceptRcpt = await acceptTx.wait();
 
-    const c1 = await withRetry(() =>
+    const c1 = await pinRead(() =>
         (escrow as any).getCommit(commitId, { blockTag: acceptRcpt!.blockNumber }),
     );
     info("SLA deadline", `block ${c1.deadline}`);
@@ -265,7 +277,7 @@ async function main() {
         process.exit(1);
     }
 
-    const c2 = await withRetry(() =>
+    const c2 = await pinRead(() =>
         (escrow as any).getCommit(commitId, { blockTag: settleRcpt!.blockNumber }),
     );
 

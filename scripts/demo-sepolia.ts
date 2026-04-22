@@ -4,9 +4,8 @@
  * Demonstrates the SLA enforcement / slashing path:
  *   setup bundler -> register offer -> commit -> accept -> [SLA passes] -> claimRefund
  *
- * The bundler is a deterministic ephemeral wallet (derived from a fixed seed) so the
- * same address is reused across runs -- the 0.01 ETH registration bond is paid once per
- * MIN_LIFETIME (~= 7 days). The deployer/signer acts as the user (client).
+ * The bundler uses PRIVATE_KEY (same as signer) -- one wallet plays both roles on testnet.
+ * The 0.01 ETH registration bond is paid once per MIN_LIFETIME (~= 7 days).
  *
  * Usage: npm run demo:sepolia   or   ./surelock demo --network baseSepolia
  */
@@ -57,8 +56,9 @@ async function main() {
     const { chainId } = await ethers.provider.getNetwork();
     const deployment = loadDeployment(chainId);
 
-    // Bundler wallet: same key as signer -- one wallet plays both roles on testnet.
-    const bundlerPk = process.env["PRIVATE_KEY"]!;
+    // Bundler wallet uses BUNDLER_KEY -- must be a different address from signer (SelfCommitForbidden).
+    const bundlerPk = process.env["BUNDLER_KEY"];
+    if (!bundlerPk) throw new Error("BUNDLER_KEY env var required -- use: surelock exec --key deployer --bundler-key demo-bundler -- ...");
     const bundler   = new ethers.Wallet(bundlerPk, ethers.provider);
 
     console.log(`\nNetwork:     ${deployment.network} (chainId ${chainId})`);
@@ -70,7 +70,7 @@ async function main() {
     const escrow   = await ethers.getContractAt("SLAEscrow",     deployment.escrow)    as any;
     const registry = await ethers.getContractAt("QuoteRegistry", deployment.registry) as any;
 
-    // Explicit nonce tracking per wallet to avoid replacement errors on Base Sepolia.
+    // Separate nonce counters for signer (user) and bundler -- different addresses, independent sequences.
     let userNonce    = await ethers.provider.getTransactionCount(signer.address,  "latest");
     let bundlerNonce = await ethers.provider.getTransactionCount(bundler.address, "latest");
     const GAS = {
@@ -125,23 +125,7 @@ async function main() {
         lastStep0Block = r!.blockNumber;
         console.log(gasLine(r!));
     }
-    // Return excess bundler ETH to signer -- keep only a small gas reserve.
-    const GAS_RESERVE = ethers.parseEther("0.0005");
-    const bundlerEth  = await ethers.provider.getBalance(bundler.address);
-    if (bundlerEth > GAS_RESERVE) {
-        const feeData = await ethers.provider.getFeeData();
-        const gPrice  = feeData.maxFeePerGas ?? ethers.parseUnits("2", "gwei");
-        const gasCost = 21000n * gPrice;
-        const sendAmt = bundlerEth - GAS_RESERVE - gasCost;
-        if (sendAmt > 0n) {
-            console.log(`Returning ${eth(sendAmt)} bundler ETH to signer`);
-            const r = await (await bundler.sendTransaction(
-                { to: signer.address, value: sendAmt, ...BTX() }
-            )).wait();
-            lastStep0Block = r!.blockNumber;
-            console.log(gasLine(r!));
-        }
-    }
+    // (bundler has its own funds -- no excess-return needed)
 
     // Cancel expired PROPOSED commits and claim abandoned refunds from ACTIVE commits.
     // Only touch commits where signer is the user, bundler, or feeRecipient --
@@ -223,14 +207,7 @@ async function main() {
         slaBlocks     = Number(existing.slaBlocks);
         console.log(`Re-using existing offer quoteId=${quoteId}`);
     } else {
-        // Fund the bundler for bond + gas (collateral is tiny, covered by gas buffer)
-        const bundlerBal = await ethers.provider.getBalance(bundler.address);
-        const needed     = bond + ethers.parseEther("0.002"); // bond + gas buffer
-        if (bundlerBal < needed) {
-            const topUp = needed - bundlerBal;
-            console.log(`Funding bundler with ${eth(topUp)}`);
-            await (await signer.sendTransaction({ to: bundler.address, value: topUp, ...UTX() })).wait();
-        }
+        // (signer == bundler -- no top-up needed)
 
         // Register offer from the bundler wallet
         const regTx = await registry.connect(bundler).register(
@@ -256,12 +233,6 @@ async function main() {
     if (idle < collateralWei) {
         const topUp = collateralWei - idle;
         console.log(`Depositing ${eth(topUp)} collateral for bundler`);
-        // Ensure gas funds for the deposit tx
-        const bal = await ethers.provider.getBalance(bundler.address);
-        if (bal < topUp + ethers.parseEther("0.001")) {
-            const gasTop = topUp + ethers.parseEther("0.001") - bal;
-            await (await signer.sendTransaction({ to: bundler.address, value: gasTop, ...UTX() })).wait();
-        }
         const depReceipt = await (await escrow.connect(bundler).deposit(BTX({ value: topUp }))).wait();
         const newIdle = await pinRead(() =>
             escrow.idleBalance(bundler.address, { blockTag: depReceipt!.blockNumber })
