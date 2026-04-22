@@ -1,5 +1,9 @@
 # @surelock-labs/router
 
+## 0.1.3
+
+- Package: `@surelock-labs/protocol` peer pin bumped from `^0.1.1` to `^0.1.9` -- aligns the declared floor with the protocol version this release is tested against, so `npm install` selects a tested pair rather than floating through intermediate 0.1.x patch versions.
+
 ## 0.1.2
 
 - Docs: opening callout clarifies this is a SureLock commitment SDK, not a generic ERC-6900/7579 UserOp router

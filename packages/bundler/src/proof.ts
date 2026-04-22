@@ -306,22 +306,26 @@ export async function buildSettleProof(
 // -- Retry helper ---------------------------------------------------------------
 
 /**
- * Retry an async function when the RPC node returns "header not found".
+ * Retry an async function when the RPC node reports the block is not yet
+ * visible -- either "header not found" or "block not found".
  *
- * Load-balanced RPC endpoints (e.g. Base Sepolia) may serve a request from a
- * node that hasn't yet synced the most recently mined block. A short retry loop
- * resolves this in practice.
+ * Load-balanced RPC endpoints (e.g. Base Sepolia, public Base mainnet) may
+ * serve a request from a node that hasn't yet synced the most recently mined
+ * block. Different providers phrase the error differently and bury it at
+ * different nesting depths; this helper matches both phrases at any depth
+ * ethers-v6 surfaces them.
  *
  * @param fn       Async function to retry.
  * @param retries  Maximum number of retry attempts (default 5).
  * @param delayMs  Delay between attempts in milliseconds (default 1500).
  */
-/** Return true when the error (at any nesting depth) contains "header not found". */
-function isHeaderNotFound(e: any): boolean {
+/** Return true when the error (at any nesting depth) indicates the block is not yet available. */
+function isBlockUnavailable(e: any): boolean {
+  const PAT = /(header|block) not found/i;
   return (
-    /header not found/i.test(String(e?.message ?? e)) ||
-    /header not found/i.test(String(e?.info?.error?.message ?? "")) ||
-    /header not found/i.test(String(e?.error?.message ?? ""))
+    PAT.test(String(e?.message ?? e)) ||
+    PAT.test(String(e?.info?.error?.message ?? "")) ||
+    PAT.test(String(e?.error?.message ?? ""))
   );
 }
 
@@ -334,7 +338,7 @@ export async function withRetry<T>(
     try {
       return await fn();
     } catch (e: any) {
-      if (i >= retries || !isHeaderNotFound(e)) throw e;
+      if (i >= retries || !isBlockUnavailable(e)) throw e;
       await new Promise((r) => setTimeout(r, delayMs));
     }
   }

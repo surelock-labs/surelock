@@ -1,5 +1,10 @@
 # @surelock-labs/bundler
 
+## 0.1.3
+
+- Fix: `withRetry` now also recognises `"block not found"` in addition to `"header not found"`. Some load-balanced RPC providers (including public Base mainnet behind cloudfront/cloudflare) return the former phrasing when a freshly-mined block has not yet propagated. Proof helpers and any caller wrapping reads in `withRetry` were previously throwing on the first attempt instead of retrying.
+- Package: `@surelock-labs/protocol` peer pin bumped from `^0.1.1` to `^0.1.9` -- aligns the declared floor with the protocol version this release is tested against, so `npm install` selects a tested pair rather than floating through intermediate 0.1.x patch versions.
+
 ## 0.1.2
 
 - Docs: opening callout clarifies this is an SLA SDK for existing bundler operators, not a standalone ERC-4337 bundler implementation
