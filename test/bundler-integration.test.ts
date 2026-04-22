@@ -19,9 +19,12 @@ import {
   getCommit,
   getIdleBalance,
   getDeposited,
+  getPendingPayout,
   watchCommits,
   accept,
   settle as sdkSettle,
+  computeUserOpHash,
+  type UserOperation,
 } from "@surelock-labs/bundler";
 
 import { buildBlockHeaderRlp, buildReceiptProof } from "./helpers/buildSettleProof";
@@ -150,6 +153,80 @@ describe("deposit / getIdleBalance / getDeposited", () => {
   it("reverts on zero deposit", async () => {
     const { escrowAddress, bundler } = await loadFixture(deploy);
     await expect(deposit(bundler, escrowAddress, 0n)).to.be.rejectedWith("ZeroDeposit");
+  });
+});
+
+describe("getPendingPayout", () => {
+  it("returns 0 when nothing is pending", async () => {
+    const { escrowAddress, bundler } = await loadFixture(deploy);
+    expect(await getPendingPayout(ethers.provider, escrowAddress, bundler.address)).to.equal(0n);
+  });
+
+  it("reflects the fee credited by settle()", async () => {
+    const fix = await loadFixture(deploy);
+    const { registryAddress, escrowAddress, bundler, user } = fix;
+    const { quoteId } = await register(bundler, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL });
+    await deposit(bundler, escrowAddress, COLLATERAL);
+
+    const escrow = await ethers.getContractAt("SLAEscrow", escrowAddress);
+    const protocolFee = BigInt(await escrow.protocolFeeWei());
+    const userOp = ethers.keccak256(ethers.toUtf8Bytes("getPendingPayout-test"));
+    const tx = await escrow.connect(user).commit(quoteId, userOp, bundler.address, COLLATERAL, 10, { value: ONE_GWEI + protocolFee });
+    const receipt = await tx.wait();
+    const log = receipt!.logs.map((l: any) => { try { return escrow.interface.parseLog(l); } catch { return null; } }).find((e: any) => e?.name === "CommitCreated");
+    const commitId = BigInt(log!.args.commitId);
+    const esc = await ethers.getContractAt("SLAEscrowTestable", escrowAddress);
+    await esc.connect(bundler).accept(commitId);
+    await esc.connect(bundler)["settle(uint256)"](commitId);
+
+    expect(await getPendingPayout(ethers.provider, escrowAddress, bundler.address)).to.equal(ONE_GWEI);
+    await claimPayout(bundler, escrowAddress);
+    expect(await getPendingPayout(ethers.provider, escrowAddress, bundler.address)).to.equal(0n);
+  });
+});
+
+describe("computeUserOpHash", () => {
+  const entryPoint = "0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789";
+  const userOp: UserOperation = {
+    sender:               "0x1234567890123456789012345678901234567890",
+    nonce:                0n,
+    initCode:             "0x",
+    callData:             "0xdeadbeef",
+    callGasLimit:         50_000n,
+    verificationGasLimit: 80_000n,
+    preVerificationGas:   21_000n,
+    maxFeePerGas:         ethers.parseUnits("2", "gwei"),
+    maxPriorityFeePerGas: ethers.parseUnits("1", "gwei"),
+    paymasterAndData:     "0x",
+  };
+
+  it("matches a fresh inline reference implementation", async () => {
+    const chainId = 84532n;
+    const coder = ethers.AbiCoder.defaultAbiCoder();
+    const inner = ethers.keccak256(coder.encode(
+      ["address","uint256","bytes32","bytes32","uint256","uint256","uint256","uint256","uint256","bytes32"],
+      [userOp.sender, userOp.nonce,
+       ethers.keccak256(userOp.initCode),
+       ethers.keccak256(userOp.callData),
+       userOp.callGasLimit, userOp.verificationGasLimit, userOp.preVerificationGas,
+       userOp.maxFeePerGas, userOp.maxPriorityFeePerGas,
+       ethers.keccak256(userOp.paymasterAndData)],
+    ));
+    const expected = ethers.keccak256(coder.encode(["bytes32","address","uint256"], [inner, entryPoint, chainId]));
+    expect(computeUserOpHash(userOp, entryPoint, chainId)).to.equal(expected);
+  });
+
+  it("changes when any input changes", async () => {
+    const base = computeUserOpHash(userOp, entryPoint, 84532n);
+    expect(computeUserOpHash({ ...userOp, nonce: 1n }, entryPoint, 84532n)).to.not.equal(base);
+    expect(computeUserOpHash(userOp, "0x0000000000000000000000000000000000000001", 84532n)).to.not.equal(base);
+    expect(computeUserOpHash(userOp, entryPoint, 8453n)).to.not.equal(base);
+  });
+
+  it("accepts number and bigint for nonce and chainId", async () => {
+    const h1 = computeUserOpHash(userOp, entryPoint, 84532);
+    const h2 = computeUserOpHash(userOp, entryPoint, 84532n);
+    expect(h1).to.equal(h2);
   });
 });
 

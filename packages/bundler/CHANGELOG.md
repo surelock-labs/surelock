@@ -1,5 +1,12 @@
 # @surelock-labs/bundler
 
+## 0.1.8
+
+- Added `computeUserOpHash(userOp, entryPoint, chainId)` -- canonical ERC-4337 v0.6 userOpHash. Moves the duplicated implementation out of `scripts/demo-settle.ts` into the SDK where any integrator building their own UserOps can reuse it.
+- Added `UserOperation` type export for use with `computeUserOpHash`.
+- Added `getPendingPayout(provider, escrow, address)` -- read-only preview of `pendingWithdrawals` before calling `claimPayout`.
+- README: fixed stale "Return values" section. `deposit`, `withdraw`, `deregister`, `accept`, `settle` return `ContractTransactionReceipt` (since 0.1.4). `register` returns `Offer`. `claimPayout`, `claimBond` return `bigint` (amount).
+
 ## 0.1.7
 
 - Added `fetchPendingCommits(provider, escrowAddress, bundlerAddress, fromBlock, toBlock?)` -- one-shot scan of past `CommitCreated` events for a bundler. Complements `watchCommits` for sequential scripts and integration tests where event subscription is impractical.

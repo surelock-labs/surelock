@@ -14,6 +14,7 @@ export {
   getCommit,
   getIdleBalance,
   getDeposited,
+  getPendingPayout,
   fetchPendingCommits,
   watchCommits,
   validateBeforeAccept,
@@ -49,11 +50,12 @@ export {
   buildBlockHeaderRlp,
   buildReceiptProof,
   buildSettleProof,
+  computeUserOpHash,
   findUserOpLogIndex,
   withRetry,
 } from "./proof";
 
-export type { RpcProvider, ReceiptProof, SettleProof } from "./proof";
+export type { RpcProvider, ReceiptProof, SettleProof, UserOperation } from "./proof";
 
 export { DEPLOYMENTS } from "@surelock-labs/protocol";
 export type { Deployment, Offer } from "@surelock-labs/protocol";

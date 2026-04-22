@@ -152,6 +152,15 @@ export async function getDeposited(
   return BigInt(await escrow.deposited(bundlerAddress));
 }
 
+export async function getPendingPayout(
+  provider: ethers.Provider,
+  escrowAddress: string,
+  address: string,
+): Promise<bigint> {
+  const escrow = new ethers.Contract(escrowAddress, ESCROW_ABI, provider);
+  return BigInt(await escrow.pendingWithdrawals(address));
+}
+
 // -- commit lifecycle ----------------------------------------------------------
 
 /**

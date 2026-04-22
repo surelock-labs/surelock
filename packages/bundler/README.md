@@ -120,7 +120,15 @@ stop(); // unsubscribe when done
 
 ## API
 
-**Return values.** `deposit()`, `withdraw()`, `deregister()`, `accept()`, `settle()`, and `claimPayout()` all await the transaction internally and return `undefined` (or `bigint` for `claimPayout`). Do not expect transaction objects -- just `await` them.
+**Return values.** Write functions await the transaction internally and return a domain value:
+
+| Function | Returns |
+|---|---|
+| `register` | `Offer` -- the full offer, ready to pass to `commitOp` |
+| `deposit`, `withdraw`, `deregister`, `deregisterExpired`, `renew`, `accept`, `settle` | `ContractTransactionReceipt` |
+| `claimPayout`, `claimBond` | `bigint` -- amount paid out (0 if nothing pending) |
+
+Read functions return plain values: `getCommit -> CommitInfo`, `getIdleBalance`/`getDeposited`/`getPendingPayout`/`getPendingBond -> bigint`, `fetchPendingCommits -> PendingCommit[]`, `validateBeforeAccept -> AcceptValidation`.
 
 **DEPLOYMENTS.** Only Base Sepolia (`84532`) is exported. For a local hardhat node or other networks, pass contract addresses directly.
 
@@ -262,6 +270,15 @@ On success, `feePerOp` is credited to your `pendingWithdrawals` and the commit e
 const claimed = await client.claimPayout(signer);
 ```
 
+#### `getPendingPayout(address)` -> balance
+
+Read-only preview of pending payout (fees, refunds, bonds credited to this address). Use to check whether `claimPayout` is worth sending.
+
+```typescript
+const pending = await getPendingPayout(provider, escrow, signer.address);
+if (pending > 0n) await claimPayout(signer, escrow);
+```
+
 #### `getCommit(commitId, blockTag?)` -> `CommitInfo`
 
 Pass `blockTag` to pin the read to a specific block. Essential right after a write on load-balanced RPCs where "latest" may still trail the node that accepted the tx.
@@ -293,6 +310,20 @@ stop(); // unsubscribe
 
 ---
 
+### UserOp hash
+
+`computeUserOpHash(userOp, entryPoint, chainId)` returns the canonical ERC-4337 v0.6 `userOpHash` -- same `bytes32` the EntryPoint emits as `topic[1]` of `UserOperationEvent`.
+
+```typescript
+import { computeUserOpHash, type UserOperation } from "@surelock-labs/bundler";
+
+const hash = computeUserOpHash(userOp, ENTRY_POINT_V06, chainId);
+```
+
+`UserOperation` omits `signature` -- it is not part of the hash. v0.7 uses a different struct layout; this helper is v0.6 only.
+
+---
+
 ## Standalone functions
 
 All functions work standalone with explicit arguments:
@@ -301,8 +332,8 @@ All functions work standalone with explicit arguments:
 import {
   register, deregister, deposit, withdraw,
   accept, settle, claimPayout, getCommit,
-  getIdleBalance, getDeposited, watchCommits,
-  buildSettleProof, withRetry, DEPLOYMENTS,
+  getIdleBalance, getDeposited, getPendingPayout, watchCommits,
+  buildSettleProof, computeUserOpHash, withRetry, DEPLOYMENTS,
 } from "@surelock-labs/bundler";
 
 const { registry, escrow } = DEPLOYMENTS[84532];

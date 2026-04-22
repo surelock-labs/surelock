@@ -1,6 +1,6 @@
 {
   "name": "@surelock-labs/bundler",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "SDK for bundler operators to register SLA offers, accept commits, settle with MPT proofs, and earn fees via the SureLock protocol",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

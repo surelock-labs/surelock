@@ -5,7 +5,7 @@ import type { Wallet, JsonRpcProvider } from "ethers";
 import {
     register, deposit, accept, settle, withdraw, claimPayout, deregister, claimBond,
     getIdleBalance, getCommit, fetchPendingCommits,
-    buildBlockHeaderRlp, buildReceiptProof, withRetry,
+    buildBlockHeaderRlp, buildReceiptProof, computeUserOpHash, withRetry,
 } from "@surelock-labs/bundler";
 import { fetchQuotes, commitOp, cancel, claimRefund } from "@surelock-labs/router";
 import { loadDeployment } from "./deployment";
@@ -39,23 +39,6 @@ const EP_ABI = [
 const DEMO_FEE_WEI    = ethers.parseUnits("5000", "gwei");
 const DEMO_COLL_WEI   = DEMO_FEE_WEI + 1n;
 const DEMO_SLA_BLOCKS = 100;
-
-// Compute the canonical ERC-4337 v0.6 userOpHash.
-function computeUserOpHash(op: Record<string, unknown>, entryPoint: string, chainId: bigint): string {
-    const coder = ethers.AbiCoder.defaultAbiCoder();
-    const inner = ethers.keccak256(coder.encode(
-        ["address","uint256","bytes32","bytes32","uint256","uint256","uint256","uint256","uint256","bytes32"],
-        [
-            op.sender, op.nonce,
-            ethers.keccak256(op.initCode as string),
-            ethers.keccak256(op.callData as string),
-            op.callGasLimit, op.verificationGasLimit, op.preVerificationGas,
-            op.maxFeePerGas, op.maxPriorityFeePerGas,
-            ethers.keccak256(op.paymasterAndData as string),
-        ],
-    ));
-    return ethers.keccak256(coder.encode(["bytes32","address","uint256"], [inner, entryPoint, chainId]));
-}
 
 async function drainPendingTxs(wallet: Wallet): Promise<void> {
     const provider = wallet.provider!;
