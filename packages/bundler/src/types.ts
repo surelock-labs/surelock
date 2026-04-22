@@ -1,5 +1,11 @@
 export type { PendingCommit, CommitInfo } from "@surelock-labs/protocol";
 
+export interface AcceptedCommit {
+  commitId:    bigint;
+  deadline:    bigint;
+  blockNumber: number;
+}
+
 export interface RegisterOfferParams {
   feePerOp: bigint;
   slaBlocks: number;

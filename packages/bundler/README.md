@@ -308,6 +308,22 @@ stop(); // unsubscribe
 
 `PendingCommit` fields: `commitId`, `quoteId`, `user`, `userOpHash`, `acceptDeadline`.
 
+#### `fetchAcceptedCommits(bundlerAddress, fromBlock, toBlock?)` -> `AcceptedCommit[]`
+
+One-shot scan of past `CommitAccepted` events for this bundler. Returns historical records (`commitId`, `deadline`, `blockNumber`); a returned commit may since have settled or refunded. Filter with `getCommit(commitId)` if you need live state.
+
+Complements `fetchPendingCommits` -- use when catching up after downtime to find commits you accepted but haven't settled.
+
+```typescript
+const accepted = await fetchAcceptedCommits(provider, escrow, signer.address, fromBlock);
+for (const a of accepted) {
+  const c = await getCommit(provider, escrow, a.commitId);
+  if (!c.settled && !c.refunded) {
+    // still ACTIVE -- consider settle() or claimRefund() depending on deadline
+  }
+}
+```
+
 ---
 
 ### UserOp hash
@@ -332,7 +348,8 @@ All functions work standalone with explicit arguments:
 import {
   register, deregister, deposit, withdraw,
   accept, settle, claimPayout, getCommit,
-  getIdleBalance, getDeposited, getPendingPayout, watchCommits,
+  getIdleBalance, getDeposited, getPendingPayout,
+  fetchPendingCommits, fetchAcceptedCommits, watchCommits,
   buildSettleProof, computeUserOpHash, withRetry, DEPLOYMENTS,
 } from "@surelock-labs/bundler";
 

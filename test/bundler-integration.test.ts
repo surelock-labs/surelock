@@ -20,6 +20,7 @@ import {
   getIdleBalance,
   getDeposited,
   getPendingPayout,
+  fetchAcceptedCommits,
   watchCommits,
   accept,
   settle as sdkSettle,
@@ -378,6 +379,58 @@ describe("getCommit", () => {
 });
 
 // -- watchCommits --------------------------------------------------------------
+
+describe("fetchAcceptedCommits", () => {
+  async function acceptOne(fix: Awaited<ReturnType<typeof deploy>>, tag: string) {
+    const { registryAddress, escrowAddress, bundler, user } = fix;
+    const { quoteId } = await register(bundler, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL });
+    await deposit(bundler, escrowAddress, COLLATERAL);
+    const escrow = await ethers.getContractAt("SLAEscrow", escrowAddress);
+    const protocolFee = BigInt(await escrow.protocolFeeWei());
+    const tx = await escrow.connect(user).commit(quoteId, ethers.keccak256(ethers.toUtf8Bytes(tag)), bundler.address, COLLATERAL, 10, { value: ONE_GWEI + protocolFee });
+    const receipt = await tx.wait();
+    const log = receipt!.logs.map((l: any) => { try { return escrow.interface.parseLog(l); } catch { return null; } }).find((e: any) => e?.name === "CommitCreated");
+    const commitId = BigInt(log!.args.commitId);
+    const esc = await ethers.getContractAt("SLAEscrowTestable", escrowAddress);
+    const acceptTx = await esc.connect(bundler).accept(commitId);
+    const acceptRcpt = await acceptTx.wait();
+    return { commitId, acceptBlock: acceptRcpt!.blockNumber };
+  }
+
+  it("returns accepted events for this bundler", async () => {
+    const fix = await loadFixture(deploy);
+    const fromBlock = await ethers.provider.getBlockNumber();
+    const { commitId, acceptBlock } = await acceptOne(fix, "fac-1");
+
+    const accepted = await fetchAcceptedCommits(ethers.provider, fix.escrowAddress, fix.bundler.address, fromBlock);
+    expect(accepted).to.have.length(1);
+    expect(accepted[0].commitId).to.equal(commitId);
+    expect(accepted[0].blockNumber).to.equal(acceptBlock);
+    expect(accepted[0].deadline).to.be.greaterThan(0n);
+  });
+
+  it("excludes events for other bundlers via indexed filter", async () => {
+    const fix = await loadFixture(deploy);
+    const fromBlock = await ethers.provider.getBlockNumber();
+    await acceptOne(fix, "fac-2");
+
+    const other = await fetchAcceptedCommits(ethers.provider, fix.escrowAddress, fix.bundler2.address, fromBlock);
+    expect(other).to.have.length(0);
+  });
+
+  it("returns historical records -- does not filter commits that have since settled", async () => {
+    const fix = await loadFixture(deploy);
+    const fromBlock = await ethers.provider.getBlockNumber();
+    const { commitId } = await acceptOne(fix, "fac-3");
+
+    const esc = await ethers.getContractAt("SLAEscrowTestable", fix.escrowAddress);
+    await esc.connect(fix.bundler)["settle(uint256)"](commitId);
+
+    const accepted = await fetchAcceptedCommits(ethers.provider, fix.escrowAddress, fix.bundler.address, fromBlock);
+    expect(accepted).to.have.length(1);
+    expect(accepted[0].commitId).to.equal(commitId);
+  });
+});
 
 describe("watchCommits", () => {
   it("fires the callback when a commit is directed at the bundler", async () => {

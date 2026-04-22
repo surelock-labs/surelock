@@ -5,6 +5,8 @@
 - Added `computeUserOpHash(userOp, entryPoint, chainId)` -- canonical ERC-4337 v0.6 userOpHash. Moves the duplicated implementation out of `scripts/demo-settle.ts` into the SDK where any integrator building their own UserOps can reuse it.
 - Added `UserOperation` type export for use with `computeUserOpHash`.
 - Added `getPendingPayout(provider, escrow, address)` -- read-only preview of `pendingWithdrawals` before calling `claimPayout`.
+- Added `fetchAcceptedCommits(provider, escrow, bundlerAddress, fromBlock, toBlock?)` -- symmetric to `fetchPendingCommits` but scans `CommitAccepted` events. Returns historical records (commitId, deadline, blockNumber); callers filter with `getCommit()` if they need live state.
+- Added `AcceptedCommit` type export.
 - README: fixed stale "Return values" section. `deposit`, `withdraw`, `deregister`, `accept`, `settle` return `ContractTransactionReceipt` (since 0.1.4). `register` returns `Offer`. `claimPayout`, `claimBond` return `bigint` (amount).
 
 ## 0.1.7

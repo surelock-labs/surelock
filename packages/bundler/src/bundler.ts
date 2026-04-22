@@ -1,6 +1,6 @@
 import { ethers } from "ethers";
 import { REGISTRY_ABI, ESCROW_ABI, type Offer } from "@surelock-labs/protocol";
-import { RegisterOfferParams, PendingCommit, CommitInfo, BundlerConfig } from "./types";
+import { RegisterOfferParams, PendingCommit, AcceptedCommit, CommitInfo, BundlerConfig } from "./types";
 import { buildSettleProof, withRetry, SettleProof } from "./proof";
 
 // -- offer management ----------------------------------------------------------
@@ -368,6 +368,27 @@ export async function fetchPendingCommits(
       userOpHash:    log.args.userOpHash as string,
       acceptDeadline: BigInt(log.args.acceptDeadline),
     }));
+}
+
+/** Historical CommitAccepted records -- not live state; a returned commit may since have settled/refunded. */
+export async function fetchAcceptedCommits(
+  provider: ethers.Provider,
+  escrowAddress: string,
+  bundlerAddress: string,
+  fromBlock: number,
+  toBlock: number | "latest" = "latest",
+): Promise<AcceptedCommit[]> {
+  const escrow = new ethers.Contract(escrowAddress, ESCROW_ABI, provider);
+  const logs = await escrow.queryFilter(
+    escrow.filters.CommitAccepted(null, bundlerAddress),
+    fromBlock,
+    toBlock,
+  );
+  return logs.map((log: any) => ({
+    commitId:    BigInt(log.args.commitId),
+    deadline:    BigInt(log.args.deadline),
+    blockNumber: log.blockNumber,
+  }));
 }
 
 /**

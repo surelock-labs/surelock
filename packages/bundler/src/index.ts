@@ -16,12 +16,13 @@ export {
   getDeposited,
   getPendingPayout,
   fetchPendingCommits,
+  fetchAcceptedCommits,
   watchCommits,
   validateBeforeAccept,
   prioritizeSureLockOps,
 } from "./bundler";
 
-export type { RegisterOfferParams, PendingCommit, CommitInfo, BundlerConfig } from "./types";
+export type { RegisterOfferParams, PendingCommit, AcceptedCommit, CommitInfo, BundlerConfig } from "./types";
 export type { AcceptValidation, AcceptChecks } from "./bundler";
 
 export {
