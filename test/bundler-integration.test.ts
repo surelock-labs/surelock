@@ -27,6 +27,9 @@ import {
   settle as sdkSettle,
   computeUserOpHash,
   type UserOperation,
+  readEscrowConstants,
+  readRegistryConstants,
+  ENTRY_POINT_V06,
 } from "@surelock-labs/bundler";
 
 import { buildBlockHeaderRlp, buildReceiptProof } from "./helpers/buildSettleProof";
@@ -862,6 +865,77 @@ describe("renew", () => {
     await renew(bundler, registryAddress, quoteId);
     const afterRenew = await registry.getOffer(quoteId);
     expect(BigInt(afterRenew.registeredAt)).to.be.greaterThan(BigInt(beforeRenew.registeredAt));
+  });
+});
+
+describe("readEscrowConstants / readRegistryConstants / ENTRY_POINT_V06", () => {
+  it("readEscrowConstants round-trips every field against the contract's own views", async () => {
+    const { escrow, escrowAddress } = await loadFixture(deploy);
+    const got = await readEscrowConstants(ethers.provider, escrowAddress);
+
+    expect(got.version).to.equal(await escrow.version());
+    expect(got.entryPoint.toLowerCase()).to.equal((await escrow.entryPoint() as string).toLowerCase());
+    expect(got.acceptGraceBlocks).to.equal(BigInt(await escrow.ACCEPT_GRACE_BLOCKS()));
+    expect(got.settlementGraceBlocks).to.equal(BigInt(await escrow.SETTLEMENT_GRACE_BLOCKS()));
+    expect(got.refundGraceBlocks).to.equal(BigInt(await escrow.REFUND_GRACE_BLOCKS()));
+    expect(got.maxSlaBlocks).to.equal(Number(await escrow.MAX_SLA_BLOCKS()));
+    expect(got.maxProtocolFeeWei).to.equal(BigInt(await escrow.MAX_PROTOCOL_FEE_WEI()));
+    expect(got.protocolFeeWei).to.equal(BigInt(await escrow.protocolFeeWei()));
+    expect(got.feeRecipient.toLowerCase()).to.equal((await escrow.feeRecipient() as string).toLowerCase());
+  });
+
+  it("readEscrowConstants reflects setProtocolFeeWei mutations live (not cached)", async () => {
+    const { escrow, escrowAddress, owner } = await loadFixture(deploy);
+    const before = await readEscrowConstants(ethers.provider, escrowAddress);
+    expect(before.protocolFeeWei).to.equal(0n);
+
+    const newFee = ethers.parseUnits("777", "gwei");
+    await escrow.connect(owner).setProtocolFeeWei(newFee);
+    const after = await readEscrowConstants(ethers.provider, escrowAddress);
+    expect(after.protocolFeeWei).to.equal(newFee);
+  });
+
+  it("readEscrowConstants reflects setFeeRecipient mutations live (not cached)", async () => {
+    const { escrow, escrowAddress, owner, user } = await loadFixture(deploy);
+    const before = await readEscrowConstants(ethers.provider, escrowAddress);
+
+    await escrow.connect(owner).setFeeRecipient(user.address);
+    const after = await readEscrowConstants(ethers.provider, escrowAddress);
+    expect(after.feeRecipient.toLowerCase()).to.equal(user.address.toLowerCase());
+    expect(after.feeRecipient.toLowerCase()).to.not.equal(before.feeRecipient.toLowerCase());
+  });
+
+  it("readRegistryConstants round-trips every field against the contract's own views", async () => {
+    const { registry, registryAddress } = await loadFixture(deploy);
+    const got = await readRegistryConstants(ethers.provider, registryAddress);
+
+    expect(got.minBond).to.equal(BigInt(await registry.MIN_BOND()));
+    expect(got.maxBond).to.equal(BigInt(await registry.MAX_BOND()));
+    expect(got.maxSlaBlocks).to.equal(Number(await registry.MAX_SLA_BLOCKS()));
+    expect(got.registrationBond).to.equal(BigInt(await registry.registrationBond()));
+  });
+
+  it("readRegistryConstants reflects setBond mutations live (not cached)", async () => {
+    const { registry, registryAddress, owner } = await loadFixture(deploy);
+    const before = await readRegistryConstants(ethers.provider, registryAddress);
+
+    const newBond = before.registrationBond * 3n;
+    expect(newBond).to.be.lessThanOrEqual(before.maxBond);
+    await registry.connect(owner).setBond(newBond);
+    const after = await readRegistryConstants(ethers.provider, registryAddress);
+    expect(after.registrationBond).to.equal(newBond);
+  });
+
+  it("escrow and registry agree on MAX_SLA_BLOCKS", async () => {
+    const { escrowAddress, registryAddress } = await loadFixture(deploy);
+    const e = await readEscrowConstants(ethers.provider, escrowAddress);
+    const r = await readRegistryConstants(ethers.provider, registryAddress);
+    expect(e.maxSlaBlocks).to.equal(r.maxSlaBlocks);
+  });
+
+  it("ENTRY_POINT_V06 is the canonical ERC-4337 v0.6 EntryPoint address (checksum-exact)", () => {
+    expect(ENTRY_POINT_V06).to.equal("0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789");
+    expect(ethers.getAddress(ENTRY_POINT_V06)).to.equal(ENTRY_POINT_V06);
   });
 });
 

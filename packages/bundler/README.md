@@ -331,12 +331,28 @@ for (const a of accepted) {
 `computeUserOpHash(userOp, entryPoint, chainId)` returns the canonical ERC-4337 v0.6 `userOpHash` -- same `bytes32` the EntryPoint emits as `topic[1]` of `UserOperationEvent`.
 
 ```typescript
-import { computeUserOpHash, type UserOperation } from "@surelock-labs/bundler";
+import { computeUserOpHash, ENTRY_POINT_V06, type UserOperation } from "@surelock-labs/bundler";
 
 const hash = computeUserOpHash(userOp, ENTRY_POINT_V06, chainId);
 ```
 
-`UserOperation` omits `signature` -- it is not part of the hash. v0.7 uses a different struct layout; this helper is v0.6 only.
+`ENTRY_POINT_V06` is the canonical ERC-4337 v0.6 EntryPoint address (same on all EVM chains). `UserOperation` omits `signature` -- it is not part of the hash. v0.7 uses a different struct layout; this helper is v0.6 only.
+
+---
+
+### Protocol constants (live reads)
+
+`readEscrowConstants(provider, escrow)` returns every on-chain parameter of the escrow in one round-trip -- `version`, `entryPoint`, accept/settlement/refund grace blocks, `MAX_SLA_BLOCKS`, `MAX_PROTOCOL_FEE_WEI`, current `protocolFeeWei`, and `feeRecipient`. `readRegistryConstants(provider, registry)` returns `MIN_BOND`, `MAX_BOND`, `MAX_SLA_BLOCKS`, and the current `registrationBond`.
+
+```typescript
+import { readEscrowConstants, readRegistryConstants } from "@surelock-labs/bundler";
+
+const ec = await readEscrowConstants(provider, escrow);
+console.log(`SLAEscrow v${ec.version} at EntryPoint ${ec.entryPoint}`);
+console.log(`accept grace: ${ec.acceptGraceBlocks} blocks, settle+refund grace: ${ec.settlementGraceBlocks + ec.refundGraceBlocks}`);
+```
+
+Values are read from the contract at call time -- nothing is hardcoded in the SDK, so an upgraded protocol cannot cause SDK-side drift.
 
 ---
 

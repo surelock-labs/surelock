@@ -23,6 +23,9 @@ export {
 } from "./bundler";
 
 export type { RegisterOfferParams, PendingCommit, AcceptedCommit, CommitInfo, BundlerConfig } from "./types";
+
+export { readEscrowConstants, readRegistryConstants } from "./constants";
+export type { EscrowConstants, RegistryConstants } from "./constants";
 export type { AcceptValidation, AcceptChecks } from "./bundler";
 
 export {
@@ -54,6 +57,7 @@ export {
   computeUserOpHash,
   findUserOpLogIndex,
   withRetry,
+  ENTRY_POINT_V06,
 } from "./proof";
 
 export type { RpcProvider, ReceiptProof, SettleProof, UserOperation } from "./proof";

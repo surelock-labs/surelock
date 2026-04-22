@@ -6,6 +6,7 @@ import {
     register, deposit, accept, settle, withdraw, claimPayout, deregister, claimBond,
     getIdleBalance, getCommit, fetchPendingCommits,
     buildBlockHeaderRlp, buildReceiptProof, computeUserOpHash, withRetry,
+    ENTRY_POINT_V06,
 } from "@surelock-labs/bundler";
 import { fetchQuotes, commitOp, cancel, claimRefund } from "@surelock-labs/router";
 import { loadDeployment } from "./deployment";
@@ -31,8 +32,6 @@ async function waitForNextBlock(provider: JsonRpcProvider, targetBlock: number):
     }
 }
 
-// ERC-4337 v0.6 canonical EntryPoint
-const EP_V6 = "0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789";
 const EP_ABI = [
     "function depositTo(address account) external payable",
     "function getNonce(address sender, uint192 key) external view returns (uint256)",
@@ -84,7 +83,7 @@ async function main() {
     console.log(`\nNetwork  : ${deployment.network ?? "unknown"} (chainId ${chainId})`);
     console.log(`Escrow   : ${deployment.escrow}`);
     console.log(`Registry : ${deployment.registry}`);
-    console.log(`EntryPt  : ${EP_V6}`);
+    console.log(`EntryPt  : ${ENTRY_POINT_V06}`);
     console.log(`User     : ${signerWallet.address}`);
     console.log(`Bundler  : ${bundlerWallet.address}`);
 
@@ -147,12 +146,12 @@ async function main() {
     STEP("2", "Deploy MinimalAccount, pre-fund at real EntryPoint");
 
     const AcctFactory = await ethers.getContractFactory("MinimalAccount", bundler);
-    const acct        = await AcctFactory.deploy(EP_V6);
+    const acct        = await AcctFactory.deploy(ENTRY_POINT_V06);
     await acct.waitForDeployment();
     const acctAddr = await acct.getAddress();
     ok(`MinimalAccount -> ${acctAddr}`);
 
-    const ep      = new ethers.Contract(EP_V6, EP_ABI, bundler);
+    const ep      = new ethers.Contract(ENTRY_POINT_V06, EP_ABI, bundler);
     const prefund = ethers.parseUnits("200000", "gwei");
     await (await ep.depositTo(acctAddr, { value: prefund })).wait();
     ok(`Deposited ${gwei(prefund)} to EntryPoint for MinimalAccount`);
@@ -178,7 +177,7 @@ async function main() {
         paymasterAndData:      "0x",
         signature:             "0x",
     };
-    const userOpHash = computeUserOpHash(userOp, EP_V6, chainId);
+    const userOpHash = computeUserOpHash(userOp, ENTRY_POINT_V06, chainId);
     info("userOpHash", userOpHash.slice(0, 18) + "...");
 
     const { commitId: userCommitId, blockNumber: commitBlock } = await commitOp(signer, deployment.escrow, offer, userOpHash);

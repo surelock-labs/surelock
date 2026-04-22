@@ -18,12 +18,11 @@ import { RLP } from "@ethereumjs/rlp";
 
 export type RpcProvider = { send(method: string, params: unknown[]): Promise<any> };
 
+export const ENTRY_POINT_V06 = "0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789";
+
 // -- UserOperationEvent log scanner ---------------------------------------------
 
-/**
- * ERC-4337 UserOperationEvent topic0.
- * keccak256("UserOperationEvent(bytes32,address,address,uint256,bool,uint256,uint256)")
- */
+// keccak256("UserOperationEvent(bytes32,address,address,uint256,bool,uint256,uint256)")
 const USEROP_EVENT_TOPIC0 = keccak256str(
   "UserOperationEvent(bytes32,address,address,uint256,bool,uint256,uint256)",
 );

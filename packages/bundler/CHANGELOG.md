@@ -1,5 +1,12 @@
 # @surelock-labs/bundler
 
+## 0.1.9
+
+- Added `ENTRY_POINT_V06` -- canonical ERC-4337 v0.6 EntryPoint address constant.
+- Added `readEscrowConstants(provider, escrow)` -- one-shot live read of version, accept/settlement/refund grace blocks, MAX_SLA_BLOCKS, MAX_PROTOCOL_FEE_WEI, current protocolFeeWei, feeRecipient.
+- Added `readRegistryConstants(provider, registry)` -- one-shot live read of MIN_BOND, MAX_BOND, MAX_SLA_BLOCKS, current registrationBond.
+- Both readers return all values from the contract; no SDK-level hardcoding of protocol constants that could drift across upgrades.
+
 ## 0.1.8
 
 - Added `computeUserOpHash(userOp, entryPoint, chainId)` -- canonical ERC-4337 v0.6 userOpHash. Moves the duplicated implementation out of `scripts/demo-settle.ts` into the SDK where any integrator building their own UserOps can reuse it.
