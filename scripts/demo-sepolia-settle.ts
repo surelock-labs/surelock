@@ -1,29 +1,13 @@
-/**
- * MPT proof validation on Base Sepolia -- settle() happy path
- *
- * Tests the full SLAEscrow.settle() proof path against real Sepolia block data.
- * Deploys fresh contracts (MockEntryPoint + SLAEscrow) isolated from the
- * production deployment so no real ERC-4337 account is needed.
- *
- * What this actually tests:
- *   Step A -- buildBlockHeaderRlp: does keccak256(RLP) == blockhash() on Base Sepolia?
- *             Fails with "hash mismatch" if any header field is missing or wrong.
- *   Step B -- buildReceiptProof:   does the receipt trie root match block.receiptsRoot?
- *             Fails with "receiptsRoot mismatch" if receipt RLP encoding is wrong.
- *   Step C -- settle():            does the on-chain MPT verifier accept the proof?
- *             Fails with a custom error if any of the 4 verification steps fail.
- *
- * If all three pass, the MPT settle path works on Base Sepolia.
- *
- * Usage:
- *   npm run demo:sepolia:settle
- */
+// MPT proof validation on Base Sepolia -- settle() happy path
+// Usage: npm run demo:sepolia:settle
 import { ethers, upgrades } from "hardhat";
+import type { Wallet } from "ethers";
 import {
-    buildBlockHeaderRlp,
-    buildReceiptProof,
-    withRetry,
+    register, deposit, accept, settle, claimPayout,
+    getIdleBalance, getCommit,
+    buildBlockHeaderRlp, buildReceiptProof, withRetry,
 } from "@surelock-labs/bundler";
+import { commitOp } from "@surelock-labs/router";
 
 const SEP  = "-".repeat(64);
 const STEP = (n: string, s: string) => console.log(`\n[${n}] ${s}\n${SEP}`);
@@ -31,40 +15,18 @@ const ok   = (s: string) => console.log(`  v ${s}`);
 const info = (k: string, v: string) => console.log(`  ${k.padEnd(22)}: ${v}`);
 const eth  = (wei: bigint) => ethers.formatEther(wei) + " ETH";
 const gwei = (wei: bigint) => ethers.formatUnits(wei, "gwei") + " gwei";
-const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
-// withRetry from the bundler package only checks the top-level error message.
-// pinRead also checks e.info.error.message, which is where ethers buries the
-// underlying JSON-RPC "block not found" on load-balanced nodes.
-async function pinRead<T>(fn: () => Promise<T>, retries = 6, delayMs = 2000): Promise<T> {
-    for (let i = 0; ; i++) {
-        try { return await fn(); }
-        catch (e: any) {
-            if (i >= retries) throw e;
-            const s = `${String(e)} ${JSON.stringify(e?.info ?? {})}`;
-            if (!/header not found|block not found/i.test(s)) throw e;
-            await sleep(delayMs);
-        }
-    }
-}
+const DEMO_FEE_WEI    = ethers.parseUnits("5000", "gwei");
+const DEMO_COLL_WEI   = DEMO_FEE_WEI + 1n;
+const DEMO_SLA_BLOCKS = 100;
+const DEMO_BOND       = ethers.parseEther("0.0001");
 
-const DEMO_FEE_WEI      = ethers.parseUnits("5000", "gwei"); // 5000 gwei -- above bundler break-even (~2700 gwei at 0.01 gwei basefee)
-const DEMO_COLL_WEI     = DEMO_FEE_WEI + 1n;                // strictly > feePerOp (T8); minimal for testnet
-const DEMO_SLA_BLOCKS   = 100;                               // generous -- settle before deadline
-const DEMO_BOND         = ethers.parseEther("0.0001");
-
-/**
- * Clear any stuck pending transactions by sending 0-ETH self-transfers at each
- * stuck nonce with aggressively high gas. Necessary after failed runs that left
- * pending txs in the mempool at nonces Hardhat would re-use.
- */
-async function drainPendingTxs(wallet: ethers.Wallet): Promise<void> {
+async function drainPendingTxs(wallet: Wallet): Promise<void> {
     const provider = wallet.provider!;
     const latest  = await provider.getTransactionCount(wallet.address, "latest");
     const pending  = await provider.getTransactionCount(wallet.address, "pending");
     if (pending <= latest) return;
     const feeData = await provider.getFeeData();
-    // 10x current maxFeePerGas to reliably replace any stuck tx
     const maxFee = (feeData.maxFeePerGas ?? ethers.parseUnits("1", "gwei")) * 10n;
     const maxPrio = feeData.maxPriorityFeePerGas ?? ethers.parseUnits("1", "gwei");
     console.log(`  Clearing ${pending - latest} stuck pending tx(s) for ${wallet.address}...`);
@@ -83,8 +45,7 @@ async function main() {
     console.log("  SureLock -- MPT settle() proof validation on Base Sepolia");
     console.log("=".repeat(64));
 
-    // Bypass HardhatEthersProvider for transactions -- use a direct JsonRpcProvider
-    // so Hardhat middleware doesn't interfere with nonce management.
+    // Direct JsonRpcProvider so Hardhat middleware doesn't interfere with nonces.
     const rpcUrl   = process.env["RPC_URL"]!;
     const provider = new ethers.JsonRpcProvider(rpcUrl);
     const { chainId } = await provider.getNetwork();
@@ -107,41 +68,40 @@ async function main() {
     console.log(`Bundler  : ${bundlerWallet.address}`);
     console.log(`Balance  : ${eth(await provider.getBalance(signerWallet.address))}`);
 
-    const UT = (extra: Record<string, any> = {}) => extra;
-    const BT = (extra: Record<string, any> = {}) => extra;
-
     // -- 1. Deploy MockEntryPoint ---------------------------------------------
 
     STEP("1", "Deploy MockEntryPoint");
 
     const EPFactory = await ethers.getContractFactory("MockEntryPoint", signer);
-    const mockEP    = await EPFactory.deploy(UT());
+    const mockEP    = await EPFactory.deploy();
     await mockEP.waitForDeployment();
     const epAddr = await mockEP.getAddress();
     ok(`MockEntryPoint -> ${epAddr}`);
 
-    // -- 2. Deploy QuoteRegistry + SLAEscrow ---------------------------------
+    // -- 2. Deploy QuoteRegistry + SLAEscrow (throwaway) ----------------------
 
-    STEP("2", "Deploy QuoteRegistry + SLAEscrow (ENTRY_POINT = MockEntryPoint)");
+    STEP("2", "Deploy throwaway QuoteRegistry + SLAEscrow (ENTRY_POINT = MockEntryPoint)");
 
     const RegFactory = await ethers.getContractFactory("QuoteRegistry", signer);
-    const registry   = await RegFactory.deploy(signerWallet.address, DEMO_BOND, UT());
+    const registry   = await RegFactory.deploy(signerWallet.address, DEMO_BOND);
     await registry.waitForDeployment();
-    ok(`QuoteRegistry -> ${await registry.getAddress()}`);
+    const registryAddr = await registry.getAddress();
+    ok(`QuoteRegistry -> ${registryAddr}`);
 
     const EscrowFactory = await ethers.getContractFactory("SLAEscrow", signer);
     const escrow = await upgrades.deployProxy(
         EscrowFactory,
-        [await registry.getAddress(), signerWallet.address],
+        [registryAddr, signerWallet.address],
         { kind: "uups", constructorArgs: [epAddr] },
     );
     await escrow.waitForDeployment();
-    ok(`SLAEscrow     -> ${await escrow.getAddress()}`);
+    const escrowAddr = await escrow.getAddress();
+    ok(`SLAEscrow     -> ${escrowAddr}`);
     info("ENTRY_POINT (mock)", epAddr);
 
-    // -- 3. Fund bundler and register offer -----------------------------------
+    // -- 3. Bundler registers + deposits collateral (SDK) ---------------------
 
-    STEP("3", "Fund bundler, register offer, deposit collateral");
+    STEP("3", "Bundler registers offer, deposits collateral");
 
     const needed = DEMO_BOND + DEMO_COLL_WEI + ethers.parseEther("0.002");
     const bundlerBal = await provider.getBalance(bundlerWallet.address);
@@ -149,59 +109,46 @@ async function main() {
         throw new Error(`Insufficient bundler balance: have ${eth(bundlerBal)}, need ${eth(needed)}`);
     ok(`Bundler balance sufficient (${eth(bundlerBal)})`);
 
-    const regTx = await (registry as any).connect(bundler).register(
-        DEMO_FEE_WEI, DEMO_SLA_BLOCKS, DEMO_COLL_WEI, 302_400,
-        BT({ value: DEMO_BOND }),
-    );
-    const regRcpt  = await regTx.wait();
-    const regEvent = regRcpt?.logs
-        .map((l: any) => { try { return (registry as any).interface.parseLog(l); } catch { return null; } })
-        .find((e: any) => e?.name === "OfferRegistered");
-    const quoteId  = regEvent?.args?.quoteId as bigint;
-    ok(`Offer registered  quoteId=${quoteId}`);
+    const offer = await register(bundler, registryAddr, {
+        feePerOp:      DEMO_FEE_WEI,
+        slaBlocks:     DEMO_SLA_BLOCKS,
+        collateralWei: DEMO_COLL_WEI,
+        lifetime:      302_400,
+    });
+    ok(`Offer registered  quoteId=${offer.quoteId}`);
 
-    await (await (escrow as any).connect(bundler).deposit(BT({ value: DEMO_COLL_WEI }))).wait();
-    ok(`Collateral deposited  idle=${eth(BigInt(await (escrow as any).idleBalance(bundlerWallet.address)))}`);
+    await deposit(bundler, escrowAddr, DEMO_COLL_WEI);
+    const idle = await getIdleBalance(provider, escrowAddr, bundlerWallet.address);
+    ok(`Collateral deposited  idle=${eth(idle)}`);
 
-    // -- 4. User commits ------------------------------------------------------
+    // -- 4. User commits (router SDK) ----------------------------------------
 
     STEP("4", "User commits a UserOp");
 
     const userOpHash = ethers.keccak256(ethers.toUtf8Bytes(`surelock-mpt-test-${Date.now()}`));
-    const commitId   = BigInt(await pinRead(() => (escrow as any).nextCommitId()));
+    const { commitId, blockNumber: commitBlock } = await commitOp(signer, escrowAddr, offer, userOpHash);
 
-    const commitTx   = await (escrow as any).connect(signer).commit(
-        quoteId, userOpHash, bundlerWallet.address, DEMO_COLL_WEI, DEMO_SLA_BLOCKS,
-        UT({ value: DEMO_FEE_WEI, gasLimit: 400_000 }),
-    );
-    const commitRcpt = await commitTx.wait();
-
-    const c0 = await pinRead(() =>
-        (escrow as any).getCommit(commitId, { blockTag: commitRcpt!.blockNumber }),
-    );
+    const c0 = await getCommit(provider, escrowAddr, commitId, commitBlock);
     info("commitId", commitId.toString());
     info("userOpHash", userOpHash.slice(0, 18) + "...");
     info("acceptDeadline", `block ${c0.acceptDeadline}`);
 
-    // -- 5. Bundler accepts ---------------------------------------------------
+    // -- 5. Bundler accepts (SDK) --------------------------------------------
 
     STEP("5", "Bundler accepts (locks collateral, starts SLA clock)");
 
-    const acceptTx   = await (escrow as any).connect(bundler).accept(commitId, BT({ gasLimit: 300_000 }));
-    const acceptRcpt = await acceptTx.wait();
+    await accept(bundler, escrowAddr, commitId);
 
-    const c1 = await pinRead(() =>
-        (escrow as any).getCommit(commitId, { blockTag: acceptRcpt!.blockNumber }),
-    );
+    const c1 = await getCommit(provider, escrowAddr, commitId);
     info("SLA deadline", `block ${c1.deadline}`);
-    info("collateral locked", eth(BigInt(c1.collateralLocked)));
+    info("collateral locked", eth(c1.collateralLocked));
     ok("Commit is ACTIVE");
 
     // -- 6. Emit UserOperationEvent on Sepolia --------------------------------
 
     STEP("6", "Bundler calls MockEntryPoint.handleOp() -- mines the event on-chain");
 
-    const handleTx   = await (mockEP as any).connect(bundler).handleOp(userOpHash, BT({ gasLimit: 200_000 }));
+    const handleTx   = await (mockEP as any).connect(bundler).handleOp(userOpHash);
     const handleRcpt = await handleTx.wait();
 
     const inclusionBlock: number = handleRcpt!.blockNumber;
@@ -221,8 +168,6 @@ async function main() {
         ok(`keccak256(RLP) == blockhash(${inclusionBlock})  <- header encoding correct`);
     } catch (e: any) {
         console.error(`\n  x buildBlockHeaderRlp FAILED:\n    ${e.message}`);
-        console.error("\n  The MPT settle path will NOT work on Base Sepolia.");
-        console.error("  Check buildBlockHeaderRlp for missing hardfork fields.");
         process.exit(1);
     }
 
@@ -239,51 +184,38 @@ async function main() {
         ok(`receiptsRoot matches  (${proofNodes.length} node(s), txIndex=${txIndex})`);
     } catch (e: any) {
         console.error(`\n  x buildReceiptProof FAILED:\n    ${e.message}`);
-        console.error("\n  The MPT settle path will NOT work on Base Sepolia.");
-        console.error("  Check encodeReceipt() for the Base Sepolia receipt type.");
         process.exit(1);
     }
 
-    // -- Step C: settle() on-chain --------------------------------------------
+    // -- Step C: settle() on-chain (SDK) --------------------------------------
 
     STEP("C", "settle() -- on-chain MPT verification against real blockhash()");
 
     const proofHex = proofNodes.map(n => ethers.hexlify(n));
 
-    let settleRcpt: any;
+    let settleRcpt: Awaited<ReturnType<typeof settle>>;
     try {
-        const settleTx = await (escrow as any).connect(bundler).settle(
-            commitId,
-            inclusionBlock,
-            blockHeaderRlp,
-            proofHex,
-            txIndex,
-            BT({ gasLimit: 800_000 }),
-        );
-        settleRcpt = await settleTx.wait();
+        settleRcpt = await settle(bundler, escrowAddr, commitId, BigInt(inclusionBlock), blockHeaderRlp, proofHex, txIndex);
     } catch (e: any) {
         console.error(`\n  x settle() REVERTED:\n    ${e.message}`);
-        console.error("\n  Steps A and B passed but the on-chain verifier rejected the proof.");
-        console.error("  Check _verifyReceiptProof in SLAEscrow.sol.");
+        console.error("  Steps A and B passed but the on-chain verifier rejected the proof.");
         process.exit(1);
     }
 
-    const settledEvent = settleRcpt?.logs
-        .map((l: any) => { try { return (escrow as any).interface.parseLog(l); } catch { return null; } })
-        .find((e: any) => e?.name === "Settled");
-
-    if (!settledEvent) {
-        console.error("  x settle() did not emit Settled event.");
+    // Pin reads to the settle block -- load-balanced RPCs may return stale "latest".
+    const c2 = await getCommit(provider, escrowAddr, commitId, settleRcpt!.blockNumber);
+    if (!c2.settled) {
+        console.error(`\n  x settle() tx mined (block ${settleRcpt!.blockNumber}) but commit.settled is still false`);
         process.exit(1);
     }
-
-    const c2 = await pinRead(() =>
-        (escrow as any).getCommit(commitId, { blockTag: settleRcpt!.blockNumber }),
-    );
-
-    ok(`Settled event emitted  bundlerNet=${gwei(BigInt(settledEvent.args.bundlerNet))}`);
     ok(`commit.settled         = ${c2.settled}`);
     ok(`commit.inclusionBlock  = ${c2.inclusionBlock}`);
+
+    STEP("7", "Cleanup -- bundler claims settled fee from throwaway escrow");
+
+    const paid = await claimPayout(bundler, escrowAddr, settleRcpt!.blockNumber);
+    if (paid > 0n) ok(`Bundler claimed ${gwei(paid)}`);
+    else console.log("  (no pending payout -- nothing to claim)");
 
     // -- Final summary --------------------------------------------------------
 

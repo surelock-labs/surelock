@@ -10,28 +10,41 @@ export { scoreBundlers, BundlerScore, DEFAULT_LOOKBACK_BLOCKS } from "./scoring"
 /**
  * Fetch all active offers from a QuoteRegistry contract.
  *
- * Calls `QuoteRegistry.list()`, which scans all registered quotes in one RPC
- * call -- O(n) in the total number of registered quotes. For registries with
- * large offer counts, prefer `listActivePage()` to paginate and avoid hitting
- * provider response-size limits.
+ * Uses `QuoteRegistry.listActivePage(offset, limit)` and walks pages until
+ * `nextQuoteId` so no single RPC returns a blob larger than `pageSize`
+ * offers. Bounded memory, bounded response size. Safe on registries with
+ * thousands of offers.
+ *
+ * Pass `pageSize` to tune; default 200. Larger values reduce RPC count but
+ * grow response size; smaller values are safer on rate-limited providers.
  */
 export async function fetchQuotes(
   provider: ethers.Provider,
   registryAddress: string,
+  pageSize = 200,
 ): Promise<Offer[]> {
   const contract = new ethers.Contract(registryAddress, REGISTRY_ABI, provider);
-  const raw: any[] = await contract.list();
-  return raw.map((o) => ({
-    quoteId: BigInt(o.quoteId),
-    bundler: o.bundler as string,
-    feePerOp: BigInt(o.feePerOp),
-    slaBlocks: Number(o.slaBlocks),
-    collateralWei: BigInt(o.collateralWei),
-    active: true, // list() only returns active offers
-    lifetime: Number(o.lifetime),
-    registeredAt: BigInt(o.registeredAt),
-    bond: BigInt(o.bond),
-  }));
+  const total = BigInt(await contract.nextQuoteId()); // exclusive upper bound
+  if (total <= 1n) return [];
+
+  const offers: Offer[] = [];
+  for (let offset = 1n; offset < total; offset += BigInt(pageSize)) {
+    const page: any[] = await contract.listActivePage(offset, BigInt(pageSize));
+    for (const o of page) {
+      offers.push({
+        quoteId:      BigInt(o.quoteId),
+        bundler:      o.bundler as string,
+        feePerOp:     BigInt(o.feePerOp),
+        slaBlocks:    Number(o.slaBlocks),
+        collateralWei: BigInt(o.collateralWei),
+        active:       true, // listActivePage only returns active offers
+        lifetime:     Number(o.lifetime),
+        registeredAt: BigInt(o.registeredAt),
+        bond:         BigInt(o.bond),
+      });
+    }
+  }
+  return offers;
 }
 
 /**
@@ -63,6 +76,61 @@ export async function commitOp(
     .find((e: any) => e?.name === "CommitCreated");
   if (!event) throw new Error("CommitCreated event not found in receipt");
   return { commitId: BigInt(event.args.commitId), blockNumber: receipt!.blockNumber };
+}
+
+/**
+ * Cancel a commit. During the accept window only the CLIENT (commit.user) can
+ * call this; after acceptDeadline CLIENT, BUNDLER, or feeRecipient may cancel.
+ * Returns the committed feePerOp to the user's pendingWithdrawals (pull via
+ * `claimPayout`). PROTOCOL_FEE_WEI is non-refundable.
+ */
+export async function cancel(
+  signer: ethers.Signer,
+  escrowAddress: string,
+  commitId: bigint,
+): Promise<ethers.ContractTransactionReceipt> {
+  const escrow = new ethers.Contract(escrowAddress, ESCROW_ABI, signer);
+  const tx = await escrow.cancel(commitId);
+  return (await tx.wait())!;
+}
+
+/**
+ * Claim a refund after the bundler accepted but missed the SLA deadline.
+ * Credits `feePerOp + collateralLocked` to the user's pendingWithdrawals
+ * (pull via `claimPayout`). Opens at deadline + SETTLEMENT_GRACE_BLOCKS +
+ * REFUND_GRACE_BLOCKS + 1.
+ */
+export async function claimRefund(
+  signer: ethers.Signer,
+  escrowAddress: string,
+  commitId: bigint,
+): Promise<ethers.ContractTransactionReceipt> {
+  const escrow = new ethers.Contract(escrowAddress, ESCROW_ABI, signer);
+  const tx = await escrow.claimRefund(commitId);
+  return (await tx.wait())!;
+}
+
+/**
+ * Pull accumulated pendingWithdrawals -- refunded fees, cancelled fees,
+ * slashed collateral. Returns the exact amount paid out (parsed from
+ * PayoutClaimed), or 0n if nothing was pending.
+ */
+export async function claimPayout(
+  signer: ethers.Signer,
+  escrowAddress: string,
+): Promise<bigint> {
+  const escrow = new ethers.Contract(escrowAddress, ESCROW_ABI, signer);
+  const pending = BigInt(await escrow.pendingWithdrawals(await signer.getAddress()));
+  if (pending === 0n) return 0n;
+  const tx = await escrow.claimPayout();
+  const receipt = await tx.wait();
+  for (const log of receipt?.logs ?? []) {
+    try {
+      const parsed = escrow.interface.parseLog(log);
+      if (parsed?.name === "PayoutClaimed") return BigInt(parsed.args.amount);
+    } catch {}
+  }
+  return pending;
 }
 
 /**
@@ -152,6 +220,21 @@ export function createRouter(config: RouterConfig) {
     ): Promise<CommitResult> {
       if (!config.escrowAddress) throw new Error("escrowAddress not set in RouterConfig");
       return commitOp(signer, config.escrowAddress, offer, userOpHash);
+    },
+
+    cancel(signer: ethers.Signer, commitId: bigint) {
+      if (!config.escrowAddress) throw new Error("escrowAddress not set in RouterConfig");
+      return cancel(signer, config.escrowAddress, commitId);
+    },
+
+    claimRefund(signer: ethers.Signer, commitId: bigint) {
+      if (!config.escrowAddress) throw new Error("escrowAddress not set in RouterConfig");
+      return claimRefund(signer, config.escrowAddress, commitId);
+    },
+
+    claimPayout(signer: ethers.Signer) {
+      if (!config.escrowAddress) throw new Error("escrowAddress not set in RouterConfig");
+      return claimPayout(signer, config.escrowAddress);
     },
   };
 }

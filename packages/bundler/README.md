@@ -126,39 +126,66 @@ stop(); // unsubscribe when done
 
 ### Offer management
 
-#### `register(signer, params)` -> `quoteId`
+#### `register(signer, params)` -> `Offer`
+
+Returns the full `Offer` (ready to pass to `commitOp`), not just the `quoteId`.
 
 ```typescript
-const quoteId = await client.register(signer, {
+const offer = await client.register(signer, {
   feePerOp:      ethers.parseUnits("100", "gwei"),
   slaBlocks:     10,
   collateralWei: ethers.parseUnits("200", "gwei"), // must be strictly > feePerOp (T8)
 });
+// offer.quoteId, offer.collateralWei, ... all populated
 ```
 
-**Registration bond.** The contract charges a one-time registration bond (currently 0.01 ETH on testnet; read via `registry.registrationBond()`). The SDK fetches this automatically -- you do not need to pass it explicitly. It is refunded when you call `deregister()`.
+**Registration bond.** The contract charges a one-time registration bond (currently 0.01 ETH on testnet; read via `registry.registrationBond()`). The SDK fetches the current value from the contract on every call -- you do not need to pass it. Bond is refunded (pull-only, via `claimBond()`) when you call `deregister()`.
 
-**Optional params.** `lifetime` defaults to `302_400` blocks (~3.5 days, the minimum). Override if you need a shorter or longer listing window. `bond` is auto-fetched from the contract if omitted.
+**Optional params.** `lifetime` defaults to `302_400` blocks (~3.5 days, the minimum). Override if you need a longer listing window.
 
 ```typescript
-const quoteId = await client.register(signer, {
+const offer = await client.register(signer, {
   feePerOp:      ethers.parseUnits("100", "gwei"),
   slaBlocks:     10,
   collateralWei: ethers.parseUnits("200", "gwei"),
   lifetime:      302_400, // optional -- default is MIN_LIFETIME (~3.5 days)
-  bond:          ethers.parseEther("0.01"), // optional -- auto-fetched if omitted
 });
 ```
 
 Register with a longer `slaBlocks` if your latency isn't reliable. One miss can wipe the profit from many good runs.
 
+#### `renew(signer, quoteId)`
+
+Extends an offer's lifetime by resetting `registeredAt` to the current block. Call before the offer expires to avoid re-paying the bond.
+
+```typescript
+await client.renew(signer, quoteId);
+```
+
 #### `deregister(signer, quoteId)`
 
-Deactivates the offer. Already-open commits (PROPOSED or ACTIVE) continue until they settle or expire.
+Deactivates the offer. Already-open commits (PROPOSED or ACTIVE) continue until they settle or expire. Bond is moved to `pendingBonds` -- claim it with `claimBond()` below.
 
 ```typescript
 await client.deregister(signer, quoteId);
+await client.claimBond(signer); // pulls bond to bundler wallet
 ```
+
+#### `deregisterExpired(signer, quoteId)`
+
+Permissionless cleanup of an offer past its `lifetime`. Anyone can call this; the bond still goes to the offer's bundler's `pendingBonds` (not the caller's).
+
+#### `claimBond(signer)` -> `amount`
+
+Pulls the caller's accumulated `pendingBonds` from the registry. Returns the amount claimed (`0n` if nothing pending). The contract's bond flow is pull-only (CEI-compliant); `claimBond` is always the second step after `deregister`.
+
+```typescript
+const amount = await client.claimBond(signer);
+```
+
+#### `getPendingBond(bundlerAddress)` -> balance
+
+View helper for pending bond balance -- useful before calling `claimBond`.
 
 ---
 
@@ -235,10 +262,16 @@ On success, `feePerOp` is credited to your `pendingWithdrawals` and the commit e
 const claimed = await client.claimPayout(signer);
 ```
 
-#### `getCommit(commitId)` -> `CommitInfo`
+#### `getCommit(commitId, blockTag?)` -> `CommitInfo`
+
+Pass `blockTag` to pin the read to a specific block. Essential right after a write on load-balanced RPCs where "latest" may still trail the node that accepted the tx.
 
 ```typescript
 const commit = await client.getCommit(commitId);
+
+// After a write, pin the read to the receipt's block:
+const rcpt = await client.accept(signer, commitId);
+const commitAfter = await client.getCommit(commitId, rcpt.blockNumber);
 ```
 
 ---

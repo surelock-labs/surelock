@@ -1,6 +1,6 @@
 {
   "name": "@surelock-labs/router",
-  "version": "0.1.3",
+  "version": "0.1.5",
   "description": "Client SDK for SureLock: select bundlers by SLA reputation, commit UserOps with collateral-backed enforcement, and recover fees on misses",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

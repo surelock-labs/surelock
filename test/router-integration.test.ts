@@ -4,8 +4,9 @@
 import { expect }   from "chai";
 import { ethers }   from "hardhat";
 import { loadFixture } from "@nomicfoundation/hardhat-network-helpers";
-import { fetchQuotes, selectBest } from "@surelock-labs/router";
+import { fetchQuotes, selectBest, commitOp, cancel, claimRefund, claimPayout } from "@surelock-labs/router";
 import type { Offer } from "@surelock-labs/router";
+import { register, deposit, accept } from "@surelock-labs/bundler";
 
 // -- constants ----------------------------------------------------------------
 
@@ -244,5 +245,70 @@ describe("active vs routable -- fetchQuotes returns offers that may lack idle co
     const routable = await registry.listRoutable(escrowAddress);
     expect(routable.length).to.equal(1);
     expect(routable[0].bundler.toLowerCase()).to.equal(bundlerFunded.address.toLowerCase());
+  });
+});
+
+// -- cancel / claimRefund / claimPayout (router SDK) ---------------------------
+
+describe("cancel / claimRefund / claimPayout (router SDK)", () => {
+  async function deployEscrow() {
+    const [owner, bundlerSigner, user] = await ethers.getSigners();
+    const BOND = ethers.parseEther("0.0001");
+    const RegF = await ethers.getContractFactory("QuoteRegistry");
+    const reg  = await RegF.deploy(owner.address, BOND);
+    const EscF = await ethers.getContractFactory("SLAEscrowTestable");
+    const { upgrades } = await import("hardhat");
+    const esc  = await upgrades.deployProxy(EscF, [await reg.getAddress(), owner.address], { kind: "uups" }) as any;
+    const registryAddress = await reg.getAddress();
+    const escrowAddress   = await esc.getAddress();
+    const offer = await register(bundlerSigner, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 5, collateralWei: COLLATERAL });
+    await deposit(bundlerSigner, escrowAddress, COLLATERAL);
+    return { registryAddress, escrowAddress, escrow: esc, bundlerSigner, user, offer };
+  }
+
+  it("cancel returns feePaid to user and marks commit cancelled", async () => {
+    const { escrowAddress, user, offer } = await deployEscrow();
+    const userOpHash = ethers.keccak256(ethers.toUtf8Bytes("cancel-test"));
+    const { commitId } = await commitOp(user, escrowAddress, offer, userOpHash);
+
+    await cancel(user, escrowAddress, commitId);
+
+    const pending = BigInt(await (await ethers.getContractAt("SLAEscrow", escrowAddress)).pendingWithdrawals(user.address));
+    expect(pending).to.equal(ONE_GWEI);
+  });
+
+  it("claimRefund returns fee + collateral to user after SLA miss", async () => {
+    const { escrowAddress, escrow, bundlerSigner, user, offer } = await deployEscrow();
+    const userOpHash = ethers.keccak256(ethers.toUtf8Bytes("refund-test"));
+    const { commitId } = await commitOp(user, escrowAddress, offer, userOpHash);
+    await accept(bundlerSigner, escrowAddress, commitId);
+
+    const SETTLE_GRACE = BigInt(await escrow.SETTLEMENT_GRACE_BLOCKS());
+    const REFUND_GRACE = BigInt(await escrow.REFUND_GRACE_BLOCKS());
+    const info0 = await escrow.getCommit(commitId);
+    const mineCount = Number(BigInt(info0.deadline) - BigInt(await ethers.provider.getBlockNumber()) + SETTLE_GRACE + REFUND_GRACE + 1n);
+    await (await import("@nomicfoundation/hardhat-network-helpers")).mine(mineCount);
+
+    await claimRefund(user, escrowAddress, commitId);
+
+    const pending = BigInt(await escrow.pendingWithdrawals(user.address));
+    expect(pending).to.equal(ONE_GWEI + COLLATERAL);
+  });
+
+  it("claimPayout drains pendingWithdrawals and returns amount", async () => {
+    const { escrowAddress, escrow, user, offer } = await deployEscrow();
+    const userOpHash = ethers.keccak256(ethers.toUtf8Bytes("payout-test"));
+    const { commitId } = await commitOp(user, escrowAddress, offer, userOpHash);
+    await cancel(user, escrowAddress, commitId);
+
+    const claimed = await claimPayout(user, escrowAddress);
+    expect(claimed).to.equal(ONE_GWEI);
+    expect(BigInt(await escrow.pendingWithdrawals(user.address))).to.equal(0n);
+  });
+
+  it("claimPayout returns 0 when nothing is pending", async () => {
+    const { escrowAddress, user } = await deployEscrow();
+    const claimed = await claimPayout(user, escrowAddress);
+    expect(claimed).to.equal(0n);
   });
 });

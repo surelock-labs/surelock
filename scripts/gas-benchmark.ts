@@ -1,21 +1,10 @@
-/**
- * Gas benchmark -- all hot-path SLAEscrow + QuoteRegistry operations on Base Sepolia.
- *
- * Runs every measurable on-chain operation once and prints a summary table.
- *
- * Measured operations:
- *   QuoteRegistry: register, renew
- *   SLAEscrow:     deposit, commit, accept, cancel, claimRefund, claimPayout, withdraw
- *
- * NOT measured here (require special setup):
- *   settle()         -- needs a live MPT receipt proof; see scripts/demo-sepolia-settle.ts
- *   deregister()     -- requires offer to expire (MIN_LIFETIME = 302,400 blocks ~= 7 days)
- *   claimBond()      -- same; callable after deregister()
- *
- * Usage:
- *   npx hardhat run scripts/gas-benchmark.ts --network baseSepolia
- */
+// Gas benchmark for every hot-path SLAEscrow + QuoteRegistry op. Uses raw
+// ethers.Contract calls so it can read receipt.gasUsed directly (SDK functions
+// mix receipts and domain values). settle() is excluded (MPT proof setup); see
+// scripts/demo-settle.ts for its live gas figure.
 import { ethers } from "hardhat";
+import type { Provider, TransactionReceipt, ContractTransactionReceipt } from "ethers";
+import { withRetry } from "@surelock-labs/bundler";
 import { loadDeployment } from "./deployment";
 
 const SEP  = "-".repeat(60);
@@ -24,17 +13,7 @@ const eth  = (wei: bigint) => ethers.formatEther(wei) + " ETH";
 const gwei = (wei: bigint) => ethers.formatUnits(wei, "gwei") + " gwei";
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
-async function pinRead<T>(fn: () => Promise<T>, retries = 4, delayMs = 1500): Promise<T> {
-    for (let i = 0; ; i++) {
-        try { return await fn(); }
-        catch (e: any) {
-            if (i >= retries || !/header not found|block not found/i.test(String(e))) throw e;
-            await sleep(delayMs);
-        }
-    }
-}
-
-async function waitForBlock(provider: ethers.Provider, targetBlock: number, label: string) {
+async function waitForBlock(provider: Provider, targetBlock: number, label: string) {
     process.stdout.write(`  Waiting for block ${targetBlock} (${label})...`);
     while (true) {
         const cur = await provider.getBlockNumber();
@@ -62,7 +41,7 @@ interface GasRow {
 
 const rows: GasRow[] = [];
 
-function record(contract: string, operation: string, r: ethers.TransactionReceipt) {
+function record(contract: string, operation: string, r: TransactionReceipt) {
     const price = r.gasPrice ?? 0n;
     rows.push({
         contract,
@@ -109,20 +88,6 @@ function printTable() {
         padL("~175-200k",   COL[2]),
         padL("-",           COL[3]),
         padL("see settle demo", COL[4]),
-    ].join("  "));
-    console.log([
-        pad("QuoteRegistry",  COL[0]),
-        pad("deregister()",   COL[1]),
-        padL("~50-60k",       COL[2]),
-        padL("-",             COL[3]),
-        padL("MIN_LIFETIME=302400blks", COL[4]),
-    ].join("  "));
-    console.log([
-        pad("QuoteRegistry",  COL[0]),
-        pad("claimBond()",    COL[1]),
-        padL("~30-40k",       COL[2]),
-        padL("-",             COL[3]),
-        padL("after deregister()", COL[4]),
     ].join("  "));
     console.log("=".repeat(84));
 }
@@ -202,7 +167,7 @@ async function main() {
         }
     }
     if (lastStep0Block > 0) {
-        const p = await pinRead(() => escrow.pendingWithdrawals(signer.address, { blockTag: lastStep0Block })) as bigint;
+        const p = await withRetry(() => escrow.pendingWithdrawals(signer.address, { blockTag: lastStep0Block })) as bigint;
         if (p > 0n) {
             const r = await (await escrow.connect(signer).claimPayout(UTX())).wait();
             lastStep0Block = r!.blockNumber;
@@ -278,7 +243,7 @@ async function main() {
     STEP(5, "SLAEscrow.accept()");
 
     const acceptReceipt = await (await escrow.connect(bundler).accept(idA, BTX())).wait();
-    const cA = await pinRead(() =>
+    const cA = await withRetry(() =>
         escrow.getCommit(idA, { blockTag: acceptReceipt!.blockNumber })
     ) as any;
     console.log(`  accepted commitId=${idA} -- SLA deadline block ${cA.deadline}`);
@@ -295,7 +260,7 @@ async function main() {
         benchQuoteId, hashB, bundler.address, BENCH_COLL_WEI as any, BENCH_SLA,
         UTX({ value: BENCH_FEE_WEI + protocolFee })
     )).wait();
-    const cB0 = await pinRead(() =>
+    const cB0 = await withRetry(() =>
         escrow.getCommit(idB, { blockTag: commitBReceipt!.blockNumber })
     ) as any;
     console.log(`  commitId=${idB} -- acceptDeadline block ${cB0.acceptDeadline}`);
@@ -330,7 +295,7 @@ async function main() {
 
     STEP(9, "SLAEscrow.claimRefund()");
 
-    let claimRefundReceipt!: ethers.ContractTransactionReceipt | null;
+    let claimRefundReceipt!: ContractTransactionReceipt | null;
     for (let attempt = 0; ; attempt++) {
         try {
             claimRefundReceipt = await (await escrow.connect(signer).claimRefund(idA, UTX())).wait();
@@ -349,7 +314,7 @@ async function main() {
 
     STEP(10, "SLAEscrow.claimPayout()");
 
-    const pending = await pinRead(() =>
+    const pending = await withRetry(() =>
         escrow.pendingWithdrawals(signer.address, { blockTag: claimRefundReceipt!.blockNumber })
     ) as bigint;
     const claimPayoutReceipt = await (await escrow.connect(signer).claimPayout(UTX())).wait();
@@ -371,8 +336,26 @@ async function main() {
     } else {
         console.log(`  bundler idle = 0 (all collateral was slashed) -- skipping withdraw()`);
         console.log(`  NOTE: withdraw() gas not captured this run.`);
-        console.log(`        From previous demo runs: ~38,000-40,000 units.`);
     }
+
+    // ---- Step 12: QuoteRegistry.deregister() (also cleanup) -----------------
+
+    STEP(12, "QuoteRegistry.deregister()");
+
+    const deregReceipt = await (await registry.connect(bundler).deregister(benchQuoteId, BTX())).wait();
+    console.log(`  deregistered quoteId=${benchQuoteId}`);
+    record("QuoteRegistry", "deregister()", deregReceipt!);
+
+    // ---- Step 13: QuoteRegistry.claimBond() (also cleanup) ------------------
+
+    STEP(13, "QuoteRegistry.claimBond()");
+
+    const claimBondReceipt = await (await registry.connect(bundler).claimBond(BTX())).wait();
+    const bondPaid = BigInt(await withRetry(() =>
+        ethers.provider.getBalance(bundler.address, claimBondReceipt!.blockNumber),
+    ));
+    console.log(`  bond recovered (bundler balance now: ${eth(bondPaid)})`);
+    record("QuoteRegistry", "claimBond()", claimBondReceipt!);
 
     // ---- Final: print table --------------------------------------------------
 

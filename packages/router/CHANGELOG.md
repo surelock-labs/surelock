@@ -1,5 +1,17 @@
 # @surelock-labs/router
 
+## 0.1.5
+
+- `fetchQuotes` now pages via `QuoteRegistry.listActivePage(offset, limit)` instead of `list()`. Bounded response size per RPC; safe on registries with thousands of offers. Takes an optional `pageSize` argument (default 200).
+
+## 0.1.4
+
+- Added `cancel(signer, escrow, commitId)` -- cancel a commit (user-facing).
+- Added `claimRefund(signer, escrow, commitId)` -- claim refund after SLA miss (user-facing).
+- Added `claimPayout(signer, escrow)` -- pull pendingWithdrawals. Returns the amount paid out.
+- All three are also available on the `createRouter()` client.
+- Client lifecycle is now reachable end-to-end from the SDK: `selectReliable` -> `commitOp` -> (`cancel` | `claimRefund`) -> `claimPayout`. The README examples that previously told users to "call `escrow.cancel` directly" are no longer the only path.
+
 ## 0.1.3
 
 - Package: `@surelock-labs/protocol` peer pin bumped from `^0.1.1` to `^0.1.9` -- aligns the declared floor with the protocol version this release is tested against, so `npm install` selects a tested pair rather than floating through intermediate 0.1.x patch versions.

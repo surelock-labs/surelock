@@ -1,26 +1,43 @@
 import { ethers } from "ethers";
-import { REGISTRY_ABI, ESCROW_ABI } from "@surelock-labs/protocol";
+import { REGISTRY_ABI, ESCROW_ABI, type Offer } from "@surelock-labs/protocol";
 import { RegisterOfferParams, PendingCommit, CommitInfo, BundlerConfig } from "./types";
-import { buildSettleProof, SettleProof } from "./proof";
+import { buildSettleProof, withRetry, SettleProof } from "./proof";
 
 // -- offer management ----------------------------------------------------------
 
-/** Register a service offer on QuoteRegistry. Returns the assigned quoteId. */
+/**
+ * Register a service offer on QuoteRegistry. Returns the full Offer so callers
+ * can pass it directly to `commitOp()` without re-fetching from the registry.
+ *
+ * Breaking change in 0.1.4: previously returned just `bigint` (quoteId). Callers
+ * who only need the id can now destructure `(await register(...)).quoteId`.
+ */
 export async function register(
   signer: ethers.Signer,
   registryAddress: string,
   params: RegisterOfferParams,
-): Promise<bigint> {
+): Promise<Offer> {
   const registry = new ethers.Contract(registryAddress, REGISTRY_ABI, signer);
   const lifetime = params.lifetime ?? 302_400; // MIN_LIFETIME default
-  const bond = params.bond ?? BigInt(await registry.registrationBond());
+  // Bond is always read fresh from the contract -- any stale override would
+  // revert the tx. The one extra RPC call is worth the safety.
+  const bond = BigInt(await registry.registrationBond());
   const tx = await registry.register(params.feePerOp, params.slaBlocks, params.collateralWei, lifetime, { value: bond });
   const receipt = await tx.wait();
   const event = receipt?.logs
     .map((l: any) => { try { return registry.interface.parseLog(l); } catch { return null; } })
     .find((e: any) => e?.name === "OfferRegistered");
   if (!event) throw new Error("OfferRegistered event not found");
-  return BigInt(event.args.quoteId);
+  return {
+    quoteId:       BigInt(event.args.quoteId),
+    bundler:       await signer.getAddress(),
+    feePerOp:      params.feePerOp,
+    slaBlocks:     params.slaBlocks,
+    collateralWei: params.collateralWei,
+    active:        true,
+    lifetime,
+    bond,
+  };
 }
 
 /** Deactivate an offer. Only the offer owner (bundler) can call this. */
@@ -28,10 +45,67 @@ export async function deregister(
   signer: ethers.Signer,
   registryAddress: string,
   quoteId: bigint,
-): Promise<void> {
+): Promise<ethers.ContractTransactionReceipt> {
   const registry = new ethers.Contract(registryAddress, REGISTRY_ABI, signer);
   const tx = await registry.deregister(quoteId);
-  await tx.wait();
+  return (await tx.wait())!;
+}
+
+/**
+ * Permissionless cleanup of an expired offer. Anyone can call this. Bond goes
+ * to the offer's bundler's pendingBonds (not the caller's).
+ */
+export async function deregisterExpired(
+  signer: ethers.Signer,
+  registryAddress: string,
+  quoteId: bigint,
+): Promise<ethers.ContractTransactionReceipt> {
+  const registry = new ethers.Contract(registryAddress, REGISTRY_ABI, signer);
+  const tx = await registry.deregisterExpired(quoteId);
+  return (await tx.wait())!;
+}
+
+/** Extend an offer's lifetime by resetting `registeredAt` to the current block. */
+export async function renew(
+  signer: ethers.Signer,
+  registryAddress: string,
+  quoteId: bigint,
+): Promise<ethers.ContractTransactionReceipt> {
+  const registry = new ethers.Contract(registryAddress, REGISTRY_ABI, signer);
+  const tx = await registry.renew(quoteId);
+  return (await tx.wait())!;
+}
+
+/** Read the bundler's pendingBonds balance on the QuoteRegistry. */
+export async function getPendingBond(
+  provider: ethers.Provider,
+  registryAddress: string,
+  bundlerAddress: string,
+): Promise<bigint> {
+  const registry = new ethers.Contract(registryAddress, REGISTRY_ABI, provider);
+  return BigInt(await registry.pendingBonds(bundlerAddress));
+}
+
+/**
+ * Pull accumulated pendingBonds from the registry to the caller. Returns the
+ * amount claimed (parsed from the BondClaimed event).
+ */
+export async function claimBond(
+  signer: ethers.Signer,
+  registryAddress: string,
+): Promise<bigint> {
+  const registry = new ethers.Contract(registryAddress, REGISTRY_ABI, signer);
+  const pending = BigInt(await registry.pendingBonds(await signer.getAddress()));
+  if (pending === 0n) return 0n;
+  const tx = await registry.claimBond();
+  const receipt = await tx.wait();
+  for (const log of receipt?.logs ?? []) {
+    try {
+      const parsed = registry.interface.parseLog(log);
+      if (parsed?.name === "BondClaimed") return BigInt(parsed.args.amount);
+    } catch {}
+  }
+  return pending;
 }
 
 // -- collateral management -----------------------------------------------------
@@ -41,10 +115,10 @@ export async function deposit(
   signer: ethers.Signer,
   escrowAddress: string,
   amount: bigint,
-): Promise<void> {
+): Promise<ethers.ContractTransactionReceipt> {
   const escrow = new ethers.Contract(escrowAddress, ESCROW_ABI, signer);
   const tx = await escrow.deposit({ value: amount });
-  await tx.wait();
+  return (await tx.wait())!;
 }
 
 /** Withdraw idle (unlocked) collateral from SLAEscrow. */
@@ -52,10 +126,10 @@ export async function withdraw(
   signer: ethers.Signer,
   escrowAddress: string,
   amount: bigint,
-): Promise<void> {
+): Promise<ethers.ContractTransactionReceipt> {
   const escrow = new ethers.Contract(escrowAddress, ESCROW_ABI, signer);
   const tx = await escrow.withdraw(amount);
-  await tx.wait();
+  return (await tx.wait())!;
 }
 
 /** Return the bundler's idle (unlocked) balance in SLAEscrow. */
@@ -89,10 +163,10 @@ export async function accept(
   signer: ethers.Signer,
   escrowAddress: string,
   commitId: bigint,
-): Promise<void> {
+): Promise<ethers.ContractTransactionReceipt> {
   const escrow = new ethers.Contract(escrowAddress, ESCROW_ABI, signer);
   const tx = await escrow.accept(commitId);
-  await tx.wait();
+  return (await tx.wait())!;
 }
 
 /**
@@ -115,60 +189,79 @@ export async function settle(
   blockHeaderRlp: string,
   receiptProof: string[],
   txIndex: number,
-): Promise<void> {
+): Promise<ethers.ContractTransactionReceipt> {
   const escrow = new ethers.Contract(escrowAddress, ESCROW_ABI, signer);
   const tx = await escrow.settle(commitId, inclusionBlock, blockHeaderRlp, receiptProof, txIndex);
-  await tx.wait();
+  return (await tx.wait())!;
 }
 
-/** Claim all accumulated fee payouts for the caller. Returns the exact amount paid out. */
+/**
+ * Claim all accumulated fee payouts for the caller. Returns the exact amount paid out.
+ *
+ * Pass `fromBlock` (e.g. the blockNumber from a recent settle/accept receipt) to pin
+ * the pendingWithdrawals pre-check to a specific block. Required on load-balanced RPCs
+ * where "latest" may lag behind the block that credited the payout.
+ */
 export async function claimPayout(
   signer: ethers.Signer,
   escrowAddress: string,
+  fromBlock?: ethers.BlockTag,
 ): Promise<bigint> {
   const escrow = new ethers.Contract(escrowAddress, ESCROW_ABI, signer);
-  const pending = BigInt(await escrow.pendingWithdrawals(await signer.getAddress()));
+  const addr = await signer.getAddress();
+  const readPending = fromBlock !== undefined
+    ? () => escrow.pendingWithdrawals(addr, { blockTag: fromBlock })
+    : () => escrow.pendingWithdrawals(addr);
+  const pending = BigInt(await (fromBlock !== undefined ? withRetry(readPending) : readPending()));
   if (pending === 0n) return 0n;
   const tx = await escrow.claimPayout();
   const receipt = await tx.wait();
-  // Parse amount from the PayoutClaimed event -- exact, even if additional
-  // payouts accrued between the pre-tx snapshot and execution.
   for (const log of receipt?.logs ?? []) {
     try {
       const parsed = escrow.interface.parseLog(log);
       if (parsed?.name === "PayoutClaimed") return BigInt(parsed.args.amount);
     } catch {}
   }
-  return pending; // fallback: return pre-tx snapshot if event not found
+  return pending;
 }
 
-/** Fetch the full on-chain state of a commit. */
+/**
+ * Fetch the full on-chain state of a commit.
+ *
+ * Pass `blockTag` to pin the read to a specific block (e.g. the block number
+ * returned by a recent write). This is essential on load-balanced RPCs where
+ * "latest" may still be one or two blocks behind the node that accepted the
+ * transaction.
+ */
 export async function getCommit(
   provider: ethers.Provider,
   escrowAddress: string,
   commitId: bigint,
+  blockTag?: ethers.BlockTag,
 ): Promise<CommitInfo> {
   const escrow = new ethers.Contract(escrowAddress, ESCROW_ABI, provider);
-  const [core, state] = await Promise.all([
-    escrow.getCommitCore(commitId),
-    escrow.getCommitState(commitId),
-  ]);
+  const fetch = () => blockTag !== undefined
+    ? escrow.getCommit(commitId, { blockTag })
+    : escrow.getCommit(commitId);
+  // Pinned reads trigger load-balanced RPC lag ("header not found" / "block not found").
+  // Auto-retry only when blockTag is set -- "latest" reads don't need it.
+  const c = blockTag !== undefined ? await withRetry(fetch) : await fetch();
   return {
     commitId,
-    user: core.user as string,
-    feePaid: BigInt(core.feePaid),
-    bundler: core.bundler as string,
-    collateralLocked: BigInt(core.collateralLocked),
-    deadline: BigInt(core.deadline),
-    settled: Boolean(core.settled),
-    refunded: Boolean(core.refunded),
-    quoteId: BigInt(state.quoteId),
-    userOpHash: state.userOpHash as string,
-    inclusionBlock: BigInt(state.inclusionBlock),
-    accepted: Boolean(state.accepted),
-    cancelled: Boolean(state.cancelled),
-    acceptDeadline: BigInt(state.acceptDeadline),
-    slaBlocks: Number(state.slaBlocks),
+    user:             c.user as string,
+    feePaid:          BigInt(c.feePaid),
+    bundler:          c.bundler as string,
+    collateralLocked: BigInt(c.collateralLocked),
+    deadline:         BigInt(c.deadline),
+    settled:          Boolean(c.settled),
+    refunded:         Boolean(c.refunded),
+    quoteId:          BigInt(c.quoteId),
+    userOpHash:       c.userOpHash as string,
+    inclusionBlock:   BigInt(c.inclusionBlock),
+    accepted:         Boolean(c.accepted),
+    cancelled:        Boolean(c.cancelled),
+    acceptDeadline:   BigInt(c.acceptDeadline),
+    slaBlocks:        Number(c.slaBlocks),
   };
 }
 
@@ -242,6 +335,31 @@ export async function validateBeforeAccept(
 }
 
 // -- event watching ------------------------------------------------------------
+
+/**
+ * Scan past CommitCreated events for commits directed at this bundler.
+ * Useful for one-shot discovery after a known block (e.g. right after commitOp).
+ */
+export async function fetchPendingCommits(
+  provider: ethers.Provider,
+  escrowAddress: string,
+  bundlerAddress: string,
+  fromBlock: number,
+  toBlock: number | "latest" = "latest",
+): Promise<PendingCommit[]> {
+  const escrow = new ethers.Contract(escrowAddress, ESCROW_ABI, provider);
+  const normalized = bundlerAddress.toLowerCase();
+  const logs = await escrow.queryFilter(escrow.filters.CommitCreated(), fromBlock, toBlock);
+  return logs
+    .filter((log: any) => (log.args.bundler as string).toLowerCase() === normalized)
+    .map((log: any) => ({
+      commitId:      BigInt(log.args.commitId),
+      quoteId:       BigInt(log.args.quoteId),
+      user:          log.args.user as string,
+      userOpHash:    log.args.userOpHash as string,
+      acceptDeadline: BigInt(log.args.acceptDeadline),
+    }));
+}
 
 /**
  * Subscribe to CommitCreated events directed at this bundler.
@@ -325,6 +443,18 @@ export function createBundlerClient(config: BundlerConfig) {
     deregister: (signer: ethers.Signer, quoteId: bigint) =>
       deregister(signer, config.registryAddress, quoteId),
 
+    deregisterExpired: (signer: ethers.Signer, quoteId: bigint) =>
+      deregisterExpired(signer, config.registryAddress, quoteId),
+
+    renew: (signer: ethers.Signer, quoteId: bigint) =>
+      renew(signer, config.registryAddress, quoteId),
+
+    claimBond: (signer: ethers.Signer) =>
+      claimBond(signer, config.registryAddress),
+
+    getPendingBond: (bundlerAddress: string) =>
+      getPendingBond(provider, config.registryAddress, bundlerAddress),
+
     deposit: (signer: ethers.Signer, amount: bigint) =>
       deposit(signer, config.escrowAddress, amount),
 
@@ -346,8 +476,8 @@ export function createBundlerClient(config: BundlerConfig) {
     claimPayout: (signer: ethers.Signer) =>
       claimPayout(signer, config.escrowAddress),
 
-    getCommit: (commitId: bigint) =>
-      getCommit(provider, config.escrowAddress, commitId),
+    getCommit: (commitId: bigint, blockTag?: ethers.BlockTag) =>
+      getCommit(provider, config.escrowAddress, commitId, blockTag),
 
     getIdleBalance: (bundlerAddress: string) =>
       getIdleBalance(provider, config.escrowAddress, bundlerAddress),

@@ -2,6 +2,10 @@ export {
   createBundlerClient,
   register,
   deregister,
+  deregisterExpired,
+  renew,
+  claimBond,
+  getPendingBond,
   deposit,
   withdraw,
   accept,
@@ -10,6 +14,7 @@ export {
   getCommit,
   getIdleBalance,
   getDeposited,
+  fetchPendingCommits,
   watchCommits,
   validateBeforeAccept,
   prioritizeSureLockOps,
@@ -51,4 +56,4 @@ export {
 export type { RpcProvider, ReceiptProof, SettleProof } from "./proof";
 
 export { DEPLOYMENTS } from "@surelock-labs/protocol";
-export type { Deployment } from "@surelock-labs/protocol";
+export type { Deployment, Offer } from "@surelock-labs/protocol";

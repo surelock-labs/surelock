@@ -5,7 +5,6 @@ export interface RegisterOfferParams {
   slaBlocks: number;
   collateralWei: bigint;
   lifetime?: number;
-  bond?: bigint;
 }
 
 export interface BundlerConfig {

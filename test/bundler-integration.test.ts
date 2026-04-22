@@ -9,6 +9,10 @@ import type { PendingCommit } from "@surelock-labs/bundler";
 import {
   register,
   deregister,
+  deregisterExpired,
+  renew,
+  claimBond,
+  getPendingBond,
   deposit,
   withdraw,
   claimPayout,
@@ -63,18 +67,22 @@ async function deploy() {
 describe("register", () => {
   it("registers an offer and returns the quoteId", async () => {
     const { registryAddress, bundler } = await loadFixture(deploy);
-    const quoteId = await register(bundler, registryAddress, {
+    const offer = await register(bundler, registryAddress, {
       feePerOp: ONE_GWEI,
       slaBlocks: 5,
       collateralWei: COLLATERAL,
     });
-    expect(quoteId).to.equal(1n);
+    expect(offer.quoteId).to.equal(1n);
+    expect(offer.feePerOp).to.equal(ONE_GWEI);
+    expect(offer.slaBlocks).to.equal(5);
+    expect(offer.collateralWei).to.equal(COLLATERAL);
+    expect(offer.bundler.toLowerCase()).to.equal(bundler.address.toLowerCase());
   });
 
   it("each registration increments the quoteId", async () => {
     const { registryAddress, bundler } = await loadFixture(deploy);
-    const id0 = await register(bundler, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 5, collateralWei: COLLATERAL });
-    const id1 = await register(bundler, registryAddress, { feePerOp: ONE_GWEI * 2n, slaBlocks: 3, collateralWei: COLLATERAL });
+    const { quoteId: id0 } = await register(bundler, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 5, collateralWei: COLLATERAL });
+    const { quoteId: id1 } = await register(bundler, registryAddress, { feePerOp: ONE_GWEI * 2n, slaBlocks: 3, collateralWei: COLLATERAL });
     expect(id0).to.equal(1n);
     expect(id1).to.equal(2n);
   });
@@ -97,7 +105,7 @@ describe("register", () => {
 describe("deregister", () => {
   it("deactivates the offer on-chain", async () => {
     const { registry, registryAddress, bundler } = await loadFixture(deploy);
-    const quoteId = await register(bundler, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 5, collateralWei: COLLATERAL });
+    const { quoteId } = await register(bundler, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 5, collateralWei: COLLATERAL });
     await deregister(bundler, registryAddress, quoteId);
     const offer = await registry.getOffer(quoteId);
     expect(offer.bond).to.equal(0n); // deregistered
@@ -105,7 +113,7 @@ describe("deregister", () => {
 
   it("deregistered offer no longer appears in list()", async () => {
     const { registry, registryAddress, bundler } = await loadFixture(deploy);
-    const quoteId = await register(bundler, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 5, collateralWei: COLLATERAL });
+    const { quoteId } = await register(bundler, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 5, collateralWei: COLLATERAL });
     await deregister(bundler, registryAddress, quoteId);
     const offers = await registry.list();
     expect(offers.length).to.equal(0);
@@ -113,7 +121,7 @@ describe("deregister", () => {
 
   it("reverts when caller is not the offer owner", async () => {
     const { registry, registryAddress, bundler, user } = await loadFixture(deploy);
-    const quoteId = await register(bundler, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 5, collateralWei: COLLATERAL });
+    const { quoteId } = await register(bundler, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 5, collateralWei: COLLATERAL });
     await expect(deregister(user, registryAddress, quoteId))
       .to.be.rejectedWith("NotOfferOwner");
   });
@@ -175,14 +183,13 @@ describe("settle + claimPayout", () => {
     const fix = await loadFixture(deploy);
     const { registryAddress, escrowAddress, bundler, user } = fix;
 
-    const quoteId = await register(bundler, registryAddress, {
+    const { quoteId } = await register(bundler, registryAddress, {
       feePerOp: ONE_GWEI,
       slaBlocks: 10,
       collateralWei: COLLATERAL,
     });
     await deposit(bundler, escrowAddress, COLLATERAL);
 
-    // User commits directly via ethers (simulating the router side)
     const escrow = await ethers.getContractAt("SLAEscrow", escrowAddress);
     const registry = await ethers.getContractAt("QuoteRegistry", registryAddress);
     const offer = await registry.getOffer(quoteId);
@@ -194,7 +201,6 @@ describe("settle + claimPayout", () => {
       .find((e: any) => e?.name === "CommitCreated");
     const commitId = BigInt(log!.args.commitId);
 
-    // Two-phase commit: bundler must accept() to transition PROPOSED -> ACTIVE
     const escrowFull = await ethers.getContractAt("SLAEscrowTestable", escrowAddress);
     await escrowFull.connect(bundler).accept(commitId);
 
@@ -258,7 +264,7 @@ describe("getCommit", () => {
   it("returns correct commit fields", async () => {
     const { registryAddress, escrowAddress, bundler, user } = await loadFixture(deploy);
     const slaBlocks = 5;
-    const quoteId = await register(bundler, registryAddress, { feePerOp: ONE_GWEI, slaBlocks, collateralWei: COLLATERAL });
+    const { quoteId } = await register(bundler, registryAddress, { feePerOp: ONE_GWEI, slaBlocks, collateralWei: COLLATERAL });
     await deposit(bundler, escrowAddress, COLLATERAL);
 
     const escrow = await ethers.getContractAt("SLAEscrow", escrowAddress);
@@ -299,7 +305,7 @@ describe("getCommit", () => {
 describe("watchCommits", () => {
   it("fires the callback when a commit is directed at the bundler", async () => {
     const { escrow: escrowContract, registryAddress, escrowAddress, bundler, user } = await loadFixture(deploy);
-    const quoteId = await register(bundler, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 5, collateralWei: COLLATERAL });
+    const { quoteId } = await register(bundler, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 5, collateralWei: COLLATERAL });
     await deposit(bundler, escrowAddress, COLLATERAL);
 
     const userOp = ethers.keccak256(ethers.toUtf8Bytes("watch-test"));
@@ -334,7 +340,7 @@ describe("watchCommits", () => {
 
   it("does NOT fire for commits directed at a different bundler", async () => {
     const { registryAddress, escrowAddress, bundler, user, bundler2 } = await loadFixture(deploy);
-    const quoteId = await register(bundler, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 5, collateralWei: COLLATERAL });
+    const { quoteId } = await register(bundler, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 5, collateralWei: COLLATERAL });
     await deposit(bundler, escrowAddress, COLLATERAL);
 
     const received: PendingCommit[] = [];
@@ -355,7 +361,7 @@ describe("watchCommits", () => {
 
   it("stops firing after unwatch() is called", async () => {
     const { registryAddress, escrowAddress, bundler, user } = await loadFixture(deploy);
-    const quoteId = await register(bundler, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 5, collateralWei: COLLATERAL });
+    const { quoteId } = await register(bundler, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 5, collateralWei: COLLATERAL });
     await deposit(bundler, escrowAddress, COLLATERAL * 2n);
 
     const received: PendingCommit[] = [];
@@ -385,7 +391,7 @@ describe("full happy-path (register -> deposit -> commit -> settle -> claim)", (
     const { registryAddress, escrowAddress, bundler, user, feeRecipient } = await loadFixture(deploy);
 
     // 1. Register and deposit
-    const quoteId = await register(bundler, registryAddress, {
+    const { quoteId } = await register(bundler, registryAddress, {
       feePerOp: ONE_GWEI,
       slaBlocks: 10,
       collateralWei: COLLATERAL,
@@ -500,7 +506,7 @@ async function deployWithFee() {
 
 describe("PROTOCOL_FEE_WEI > 0 economics", () => {
   async function registerAndDeposit(fix: Awaited<ReturnType<typeof deployWithFee>>) {
-    const quoteId = await register(fix.bundler, fix.registryAddress, {
+    const { quoteId } = await register(fix.bundler, fix.registryAddress, {
       feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL,
     });
     await deposit(fix.bundler, fix.escrowAddress, COLLATERAL);
@@ -615,7 +621,7 @@ describe("PROTOCOL_FEE_WEI > 0 economics", () => {
 describe("cancel / claimRefund cleanup flows", () => {
   async function setupOffer() {
     const fix = await loadFixture(deploy);
-    const quoteId = await register(fix.bundler, fix.registryAddress, {
+    const { quoteId } = await register(fix.bundler, fix.registryAddress, {
       feePerOp: ONE_GWEI, slaBlocks: 5, collateralWei: COLLATERAL,
     });
     await deposit(fix.bundler, fix.escrowAddress, COLLATERAL);
@@ -686,7 +692,7 @@ describe("cancel / claimRefund cleanup flows", () => {
 describe("watchCommits data usability", () => {
   it("callback commitId is sufficient to call SDK accept() immediately", async () => {
     const { escrow: escrowContract, registryAddress, escrowAddress, bundler, user } = await loadFixture(deploy);
-    const quoteId = await register(bundler, registryAddress, {
+    const { quoteId } = await register(bundler, registryAddress, {
       feePerOp: ONE_GWEI, slaBlocks: 5, collateralWei: COLLATERAL,
     });
     await deposit(bundler, escrowAddress, COLLATERAL);
@@ -712,5 +718,61 @@ describe("watchCommits data usability", () => {
     const info = await getCommit(ethers.provider, escrowAddress, received.commitId);
     expect(info.accepted).to.be.true;
     expect(info.deadline).to.be.greaterThan(0n);
+  });
+});
+
+// -- renew / claimBond / getPendingBond / deregisterExpired --------------------
+
+describe("renew", () => {
+  it("resets the offer's registered-at block (extending lifetime)", async () => {
+    const { registry, registryAddress, bundler } = await loadFixture(deploy);
+    const { quoteId } = await register(bundler, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 5, collateralWei: COLLATERAL });
+    const beforeRenew = await registry.getOffer(quoteId);
+    await mine(5);
+    await renew(bundler, registryAddress, quoteId);
+    const afterRenew = await registry.getOffer(quoteId);
+    expect(BigInt(afterRenew.registeredAt)).to.be.greaterThan(BigInt(beforeRenew.registeredAt));
+  });
+});
+
+describe("claimBond / getPendingBond", () => {
+  it("getPendingBond returns 0 before any deregistration", async () => {
+    const { registryAddress, bundler } = await loadFixture(deploy);
+    await register(bundler, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 5, collateralWei: COLLATERAL });
+    const pending = await getPendingBond(ethers.provider, registryAddress, bundler.address);
+    expect(pending).to.equal(0n);
+  });
+
+  it("deregister moves bond to pendingBonds; claimBond pulls it out", async () => {
+    const { registryAddress, bundler } = await loadFixture(deploy);
+    const { quoteId } = await register(bundler, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 5, collateralWei: COLLATERAL });
+    await deregister(bundler, registryAddress, quoteId);
+
+    const pending = await getPendingBond(ethers.provider, registryAddress, bundler.address);
+    expect(pending).to.equal(MIN_BOND);
+
+    const claimed = await claimBond(bundler, registryAddress);
+    expect(claimed).to.equal(MIN_BOND);
+    expect(await getPendingBond(ethers.provider, registryAddress, bundler.address)).to.equal(0n);
+  });
+
+  it("claimBond returns 0 when nothing is pending", async () => {
+    const { registryAddress, bundler } = await loadFixture(deploy);
+    const claimed = await claimBond(bundler, registryAddress);
+    expect(claimed).to.equal(0n);
+  });
+});
+
+describe("deregisterExpired", () => {
+  it("anyone can deregister an expired offer; bond goes to pendingBonds", async () => {
+    const { registryAddress, bundler, user } = await loadFixture(deploy);
+    const { quoteId } = await register(bundler, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 5, collateralWei: COLLATERAL });
+    const registry = await ethers.getContractAt("QuoteRegistry", registryAddress);
+    const lifetime = BigInt(await registry.MIN_LIFETIME());
+    await mine(Number(lifetime) + 1);
+
+    await deregisterExpired(user, registryAddress, quoteId);
+    const pending = await getPendingBond(ethers.provider, registryAddress, bundler.address);
+    expect(pending).to.equal(MIN_BOND);
   });
 });

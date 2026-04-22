@@ -104,9 +104,9 @@ describe("Scenario 1: market routing -- router picks cheapest, bundler settles",
       await loadFixture(deploy);
 
     // Three bundlers register competing offers
-    const idA = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI,       slaBlocks: 10, collateralWei: COLLATERAL });
-    const idB = await register(bundlerB, registryAddress, { feePerOp: ONE_GWEI * 2n,  slaBlocks: 5,  collateralWei: COLLATERAL });
-    const idC = await register(bundlerC, registryAddress, { feePerOp: ONE_GWEI * 3n,  slaBlocks: 3,  collateralWei: COLLATERAL });
+    const { quoteId: idA } = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI,       slaBlocks: 10, collateralWei: COLLATERAL });
+    const { quoteId: idB } = await register(bundlerB, registryAddress, { feePerOp: ONE_GWEI * 2n,  slaBlocks: 5,  collateralWei: COLLATERAL });
+    const { quoteId: idC } = await register(bundlerC, registryAddress, { feePerOp: ONE_GWEI * 3n,  slaBlocks: 3,  collateralWei: COLLATERAL });
 
     await deposit(bundlerA, escrowAddress, COLLATERAL);
     await deposit(bundlerB, escrowAddress, COLLATERAL);
@@ -144,7 +144,7 @@ describe("Scenario 2: SLA miss -- bundler misses deadline, user gets refund + sl
     const { registryAddress, escrowAddress, escrow, bundlerA, user1, feeRecipient } =
       await loadFixture(deploy);
 
-    const quoteId = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 2, collateralWei: COLLATERAL });
+    const { quoteId } = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 2, collateralWei: COLLATERAL });
     await deposit(bundlerA, escrowAddress, COLLATERAL);
 
     const commitId = await doCommit(escrow, user1, quoteId, "scenario2-miss");
@@ -187,7 +187,7 @@ describe("Scenario 3: collateral exhaustion -- bundler can't take more commits t
     const { registryAddress, escrowAddress, escrow, bundlerA, user1, user2 } =
       await loadFixture(deploy);
 
-    const quoteId = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL });
+    const { quoteId } = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL });
     await deposit(bundlerA, escrowAddress, COLLATERAL); // only enough for 1 commit
 
     // First commit consumes all idle collateral
@@ -202,7 +202,7 @@ describe("Scenario 3: collateral exhaustion -- bundler can't take more commits t
     const { registryAddress, escrowAddress, escrow, bundlerA, user1, user2 } =
       await loadFixture(deploy);
 
-    const quoteId = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL });
+    const { quoteId } = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL });
     await deposit(bundlerA, escrowAddress, COLLATERAL);
 
     const commitId1 = await doCommit(escrow, user1, quoteId, "reuse-1");
@@ -243,7 +243,7 @@ describe("Scenario 5: bundler deregisters while commits are live", () => {
     const { registryAddress, escrowAddress, escrow, bundlerA, user1 } =
       await loadFixture(deploy);
 
-    const quoteId = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL });
+    const { quoteId } = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL });
     await deposit(bundlerA, escrowAddress, COLLATERAL);
 
     // Commit first, then deregister
@@ -264,7 +264,7 @@ describe("Scenario 5: bundler deregisters while commits are live", () => {
     const { registryAddress, escrowAddress, escrow, bundlerA, user1 } =
       await loadFixture(deploy);
 
-    const quoteId = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL });
+    const { quoteId } = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL });
     await deposit(bundlerA, escrowAddress, COLLATERAL);
     await deregister(bundlerA, registryAddress, quoteId);
 
@@ -279,7 +279,7 @@ describe("Scenario 6: multiple users committing to the same bundler", () => {
     const { registryAddress, escrowAddress, escrow, bundlerA, user1, user2, user3, feeRecipient } =
       await loadFixture(deploy);
 
-    const quoteId = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL });
+    const { quoteId } = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL });
     await deposit(bundlerA, escrowAddress, COLLATERAL * 3n); // enough for 3 commits
 
     const c1 = await doCommit(escrow, user1, quoteId, "multi-1");
@@ -311,7 +311,7 @@ describe("Scenario 6: multiple users committing to the same bundler", () => {
 describe("Scenario 7: idempotency guards", () => {
   it("bundler cannot settle the same commit twice", async () => {
     const { registryAddress, escrowAddress, escrow, bundlerA, user1 } = await loadFixture(deploy);
-    const quoteId = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL });
+    const { quoteId } = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL });
     await deposit(bundlerA, escrowAddress, COLLATERAL);
 
     const commitId = await doCommit(escrow, user1, quoteId, "double-settle");
@@ -323,7 +323,7 @@ describe("Scenario 7: idempotency guards", () => {
 
   it("user cannot claim refund on a settled commit", async () => {
     const { registryAddress, escrowAddress, escrow, bundlerA, user1 } = await loadFixture(deploy);
-    const quoteId = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 2, collateralWei: COLLATERAL });
+    const { quoteId } = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 2, collateralWei: COLLATERAL });
     await deposit(bundlerA, escrowAddress, COLLATERAL);
 
     const commitId = await doCommit(escrow, user1, quoteId, "settled-no-refund");
@@ -336,7 +336,7 @@ describe("Scenario 7: idempotency guards", () => {
 
   it("user cannot claim refund twice", async () => {
     const { registryAddress, escrowAddress, escrow, bundlerA, user1 } = await loadFixture(deploy);
-    const quoteId = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 2, collateralWei: COLLATERAL });
+    const { quoteId } = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 2, collateralWei: COLLATERAL });
     await deposit(bundlerA, escrowAddress, COLLATERAL);
 
     const commitId = await doCommit(escrow, user1, quoteId, "double-refund");
@@ -356,7 +356,7 @@ describe("Scenario 7: idempotency guards", () => {
 describe("Scenario 8: refund timing boundaries", () => {
   it("user cannot refund before deadline + grace expires", async () => {
     const { registryAddress, escrowAddress, escrow, bundlerA, user1 } = await loadFixture(deploy);
-    const quoteId = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL });
+    const { quoteId } = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL });
     await deposit(bundlerA, escrowAddress, COLLATERAL);
 
     const commitId = await doCommit(escrow, user1, quoteId, "too-early-refund");
@@ -366,7 +366,7 @@ describe("Scenario 8: refund timing boundaries", () => {
 
   it("bundler cannot settle after deadline", async () => {
     const { registryAddress, escrowAddress, escrow, bundlerA, user1 } = await loadFixture(deploy);
-    const quoteId = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 2, collateralWei: COLLATERAL });
+    const { quoteId } = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 2, collateralWei: COLLATERAL });
     await deposit(bundlerA, escrowAddress, COLLATERAL);
 
     const commitId = await doCommit(escrow, user1, quoteId, "late-settle");
@@ -383,7 +383,7 @@ describe("Scenario 8: refund timing boundaries", () => {
 
   it("bundler can settle at exactly the deadline block", async () => {
     const { registryAddress, escrowAddress, escrow, bundlerA, user1 } = await loadFixture(deploy);
-    const quoteId = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 5, collateralWei: COLLATERAL });
+    const { quoteId } = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 5, collateralWei: COLLATERAL });
     await deposit(bundlerA, escrowAddress, COLLATERAL);
 
     const commitId = await doCommit(escrow, user1, quoteId, "exact-deadline");
@@ -409,7 +409,7 @@ describe("Scenario 9: protocol fee accounting -- feeRecipient and bundler splits
     const PROTOCOL_FEE = 500n;
     await escrow.connect(owner).setProtocolFeeWei(PROTOCOL_FEE);
 
-    const quoteId = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL });
+    const { quoteId } = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL });
     await deposit(bundlerA, escrowAddress, COLLATERAL);
 
     // doCommit picks up protocolFeeWei automatically -- user pays feePerOp + PROTOCOL_FEE
@@ -424,7 +424,7 @@ describe("Scenario 9: protocol fee accounting -- feeRecipient and bundler splits
     const { registryAddress, escrowAddress, escrow, bundlerA, user1, feeRecipient } =
       await loadFixture(deploy);
 
-    const quoteId = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL });
+    const { quoteId } = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL });
     await deposit(bundlerA, escrowAddress, COLLATERAL);
 
     const commitId = await doCommit(escrow, user1, quoteId, "zero-protocol-fee");
@@ -440,7 +440,7 @@ describe("Scenario 9: protocol fee accounting -- feeRecipient and bundler splits
 describe("Scenario 10: withdraw while collateral is locked", () => {
   it("bundler cannot withdraw locked collateral mid-commit", async () => {
     const { registryAddress, escrowAddress, escrow, bundlerA, user1 } = await loadFixture(deploy);
-    const quoteId = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL });
+    const { quoteId } = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL });
     await deposit(bundlerA, escrowAddress, COLLATERAL);
 
     await doCommit(escrow, user1, quoteId, "withdraw-locked");
@@ -452,7 +452,7 @@ describe("Scenario 10: withdraw while collateral is locked", () => {
 
   it("bundler can withdraw idle portion when only partially locked", async () => {
     const { registryAddress, escrowAddress, escrow, bundlerA, user1 } = await loadFixture(deploy);
-    const quoteId = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL });
+    const { quoteId } = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL });
     await deposit(bundlerA, escrowAddress, COLLATERAL * 3n); // 3x collateral, only 1x locked per commit
 
     await doCommit(escrow, user1, quoteId, "partial-lock");
@@ -471,7 +471,7 @@ describe("Scenario 10: withdraw while collateral is locked", () => {
 describe("Scenario 11: duplicate userOpHash -- uniqueness enforced", () => {
   it("same userOpHash cannot be committed twice (UserOpAlreadyCommitted)", async () => {
     const { registryAddress, escrowAddress, escrow, bundlerA, user1 } = await loadFixture(deploy);
-    const quoteId = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL });
+    const { quoteId } = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL });
     await deposit(bundlerA, escrowAddress, COLLATERAL * 2n);
 
     await doCommit(escrow, user1, quoteId, "same-hash");
@@ -489,7 +489,7 @@ describe("Scenario 11: duplicate userOpHash -- uniqueness enforced", () => {
 describe("Scenario 12: bundler commits to their own offer", () => {
   it("bundler cannot commit to their own quote -- SelfCommitForbidden blocks role confusion", async () => {
     const { registryAddress, escrowAddress, escrow, bundlerA } = await loadFixture(deploy);
-    const quoteId = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL });
+    const { quoteId } = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL });
     await deposit(bundlerA, escrowAddress, COLLATERAL);
 
     // bundlerA attempts to commit to their own offer -- must revert SelfCommitForbidden
@@ -540,7 +540,7 @@ describe("Scenario 13: ETH accounting invariant holds throughout full lifecycle"
     const parties  = [bundlerA.address, user1.address, user2.address, feeRecipient.address];
     const bundlers = [bundlerA.address];
 
-    const quoteId = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL });
+    const { quoteId } = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL });
     await deposit(bundlerA, escrowAddress, COLLATERAL * 2n);
     await checkInvariant(escrow, parties, bundlers);
 
@@ -575,7 +575,7 @@ describe("Scenario 13: ETH accounting invariant holds throughout full lifecycle"
     const parties  = [bundlerA.address, user1.address, feeRecipient.address];
     const bundlers = [bundlerA.address];
 
-    const quoteId = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL });
+    const { quoteId } = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL });
     await deposit(bundlerA, escrowAddress, COLLATERAL);
     await checkInvariant(escrow, parties, bundlers);
 
@@ -669,7 +669,7 @@ describe("Scenario 15: protocol fee accounting on cancel and refund paths", () =
       await loadFixture(deploy);
 
     await escrow.connect(owner).setProtocolFeeWei(PROTOCOL_FEE);
-    const quoteId = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL });
+    const { quoteId } = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL });
     await deposit(bundlerA, escrowAddress, COLLATERAL);
 
     // Commit only -- do NOT accept (stays PROPOSED)
@@ -702,7 +702,7 @@ describe("Scenario 15: protocol fee accounting on cancel and refund paths", () =
       await loadFixture(deploy);
 
     await escrow.connect(owner).setProtocolFeeWei(PROTOCOL_FEE);
-    const quoteId = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 2, collateralWei: COLLATERAL });
+    const { quoteId } = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 2, collateralWei: COLLATERAL });
     await deposit(bundlerA, escrowAddress, COLLATERAL);
 
     const commitId = await doCommit(escrow, user1, quoteId, "s15-refund");
@@ -749,7 +749,7 @@ describe("Scenario 16: PROPOSED-state lifecycle -- cancel before and after accep
   it("client can cancel a PROPOSED commit during the accept window (not yet accepted)", async () => {
     const { registryAddress, escrowAddress, escrow, bundlerA, user1 } = await loadFixture(deploy);
 
-    const quoteId = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 5, collateralWei: COLLATERAL });
+    const { quoteId } = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 5, collateralWei: COLLATERAL });
     await deposit(bundlerA, escrowAddress, COLLATERAL);
 
     const commitId = await commitWithoutAccept(escrow, user1, quoteId, "s16-client-cancel");
@@ -769,7 +769,7 @@ describe("Scenario 16: PROPOSED-state lifecycle -- cancel before and after accep
   it("bundler can cancel a PROPOSED commit after the accept window expires", async () => {
     const { registryAddress, escrowAddress, escrow, bundlerA, user1 } = await loadFixture(deploy);
 
-    const quoteId = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 5, collateralWei: COLLATERAL });
+    const { quoteId } = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 5, collateralWei: COLLATERAL });
     await deposit(bundlerA, escrowAddress, COLLATERAL);
 
     const commitId = await commitWithoutAccept(escrow, user1, quoteId, "s16-bundler-cancel");

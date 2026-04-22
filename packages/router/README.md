@@ -207,17 +207,43 @@ import { DEPLOYMENTS } from "@surelock-labs/router";
 const { registry, escrow, timelock } = DEPLOYMENTS[84532]; // Base Sepolia testnet
 ```
 
+### `cancel(signer, escrow, commitId)`
+
+Cancel a commit. During the accept window only the CLIENT may call this; after `acceptDeadline` the CLIENT, BUNDLER, or `feeRecipient` may cancel. Returns the commit's `feePerOp` to `pendingWithdrawals` -- pull via `claimPayout`.
+
+```typescript
+import { cancel } from "@surelock-labs/router";
+await cancel(signer, escrow, commitId);
+```
+
+### `claimRefund(signer, escrow, commitId)`
+
+Claim refund after the bundler accepted but missed the SLA deadline. Credits `feePerOp + collateralLocked` to `pendingWithdrawals`. Opens at `deadline + SETTLEMENT_GRACE_BLOCKS + REFUND_GRACE_BLOCKS + 1`.
+
+```typescript
+import { claimRefund } from "@surelock-labs/router";
+await claimRefund(signer, escrow, commitId);
+```
+
+### `claimPayout(signer, escrow)`
+
+Pull accumulated `pendingWithdrawals`. Returns the exact amount paid out (`0n` if nothing is pending).
+
+```typescript
+import { claimPayout } from "@surelock-labs/router";
+const paid = await claimPayout(signer, escrow);
+```
+
 ### `REGISTRY_ABI`, `ESCROW_ABI`
 
-Exported for direct contract access without the SDK.
+Exported for callers that want to read state directly (e.g. `escrow.getCommit`, `escrow.pendingWithdrawals`, `registry.isActive`). All write paths for users are covered by the SDK -- no need to reach into the ABI for `cancel` / `claimRefund` / `claimPayout` any more.
 
 ```typescript
 import { ESCROW_ABI, DEPLOYMENTS } from "@surelock-labs/router";
 import { ethers } from "ethers";
 
 const escrow = new ethers.Contract(DEPLOYMENTS[84532].escrow, ESCROW_ABI, provider);
-await escrow.connect(signer).cancel(commitId);      // CANCELLED: bundler never accepted
-await escrow.connect(signer).claimRefund(commitId); // REFUNDED: accepted but missed SLA
+const commit = await escrow.getCommit(commitId);
 ```
 
 ---
@@ -241,12 +267,10 @@ Every commit resolves in one of three ways:
 The bundler has 12 blocks (~24s on Base) to call `accept()`. During the window, only CLIENT may call `cancel()`. After it expires, CLIENT, BUNDLER, or `feeRecipient` may cancel:
 
 ```typescript
-import { ESCROW_ABI, DEPLOYMENTS } from "@surelock-labs/router";
+import { cancel, claimPayout } from "@surelock-labs/router";
 
-const escrow = new ethers.Contract(DEPLOYMENTS[84532].escrow, ESCROW_ABI, signer);
-
-await escrow.cancel(commitId);     // after accept window has passed
-await escrow.claimPayout();        // pull your feePerOp back
+await cancel(signer, escrow, commitId);       // after accept window has passed
+await claimPayout(signer, escrow);             // pull your feePerOp back
 ```
 
 Collateral was never locked -- you get your `feePerOp` back, nothing more.
@@ -256,9 +280,11 @@ Collateral was never locked -- you get your `feePerOp` back, nothing more.
 ### REFUNDED -- bundler accepted but missed the SLA
 
 ```typescript
+import { claimRefund, claimPayout } from "@surelock-labs/router";
+
 // After: deadline + SETTLEMENT_GRACE_BLOCKS + REFUND_GRACE_BLOCKS + 1
-await escrow.claimRefund(commitId);
-await escrow.claimPayout();  // feePerOp + full collateral
+await claimRefund(signer, escrow, commitId);
+await claimPayout(signer, escrow);             // feePerOp + full collateral
 ```
 
 The protocol takes no share of slashed funds.
@@ -268,6 +294,10 @@ The protocol takes no share of slashed funds.
 ### Checking commit state
 
 ```typescript
+import { ESCROW_ABI, DEPLOYMENTS } from "@surelock-labs/router";
+import { ethers } from "ethers";
+
+const escrow = new ethers.Contract(DEPLOYMENTS[84532].escrow, ESCROW_ABI, provider);
 const commit = await escrow.getCommit(commitId);
 
 if (commit.settled)   console.log("SETTLED -- bundler was paid");
