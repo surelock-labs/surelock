@@ -17,13 +17,16 @@ const info = (k: string, v: string) => console.log(`  ${k.padEnd(22)}: ${v}`);
 const eth  = (wei: bigint) => ethers.formatEther(wei) + " ETH";
 const gwei = (wei: bigint) => ethers.formatUnits(wei, "gwei") + " gwei";
 
-/** Wait until the chain has advanced past targetBlock (blockhash available). */
 async function waitForNextBlock(provider: JsonRpcProvider, targetBlock: number): Promise<void> {
     process.stdout.write(`  Waiting for block ${targetBlock + 1} (blockhash available)...`);
     while (true) {
-        const cur = await provider.getBlockNumber();
-        if (cur > targetBlock) { process.stdout.write(` done (block ${cur})\n`); return; }
-        process.stdout.write(".");
+        try {
+            const cur = await provider.getBlockNumber();
+            if (cur > targetBlock) { process.stdout.write(` done (block ${cur})\n`); return; }
+            process.stdout.write(".");
+        } catch {
+            process.stdout.write("!");
+        }
         await new Promise(r => setTimeout(r, 1500));
     }
 }

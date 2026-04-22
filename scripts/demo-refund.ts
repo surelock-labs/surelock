@@ -14,11 +14,17 @@ const eth  = (wei: bigint) => ethers.formatEther(wei) + " ETH";
 const gwei = (wei: bigint) => ethers.formatUnits(wei, "gwei") + " gwei";
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
-/** Poll until currentBlock >= targetBlock, printing progress dots. */
 async function waitForBlock(provider: Provider, targetBlock: number, label: string) {
     process.stdout.write(`  Waiting for block ${targetBlock} (${label})...`);
     while (true) {
-        const cur = await provider.getBlockNumber();
+        let cur: number;
+        try {
+            cur = await provider.getBlockNumber();
+        } catch {
+            process.stdout.write("!");
+            await sleep(2000);
+            continue;
+        }
         if (cur >= targetBlock) { process.stdout.write(` done (block ${cur})\n`); return; }
         process.stdout.write(".");
         try { await (provider as any).send("evm_mine", []); } catch { await sleep(2000); }
