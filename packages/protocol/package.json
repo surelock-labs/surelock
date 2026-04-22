@@ -1,6 +1,6 @@
 {
   "name": "@surelock-labs/protocol",
-  "version": "0.1.5",
+  "version": "0.1.9",
   "description": "ABIs, addresses, and shared types for the SureLock on-chain SLA protocol",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -17,9 +17,10 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "rm -rf dist && tsc",
     "typecheck": "tsc --noEmit",
-    "gen-abis": "npx ts-node --project tsconfig.json scripts/gen-abis.ts"
+    "gen-abis": "npx ts-node --project tsconfig.json scripts/gen-abis.ts",
+    "gen-addresses": "npx ts-node --project tsconfig.json scripts/gen-addresses.ts"
   },
   "keywords": [
     "erc-4337",
