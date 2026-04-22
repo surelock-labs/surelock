@@ -1,6 +1,6 @@
 {
   "name": "@surelock-labs/protocol",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "ABIs, addresses, and shared types for the SureLock on-chain SLA protocol",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
