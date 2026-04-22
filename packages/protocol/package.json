@@ -1,0 +1,43 @@
+{
+  "name": "@surelock-labs/protocol",
+  "version": "0.1.4",
+  "description": "ABIs, addresses, and shared types for the SureLock on-chain SLA protocol",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "gen-abis": "npx ts-node --project tsconfig.json scripts/gen-abis.ts"
+  },
+  "keywords": [
+    "erc-4337",
+    "account-abstraction",
+    "bundler",
+    "sla",
+    "ethereum"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "author": "SureLock Labs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/surelock-labs/surelock.git"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  }
+}

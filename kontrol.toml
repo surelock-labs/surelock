@@ -1,0 +1,11 @@
+[default]
+src     = "contracts"
+test    = "test/foundry"
+out     = "out"
+libs    = ["node_modules", "lib"]
+remappings = [
+    "@openzeppelin/=node_modules/@openzeppelin/",
+]
+
+[invariant]
+fail_on_revert = false

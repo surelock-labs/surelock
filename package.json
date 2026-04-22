@@ -1,0 +1,32 @@
+{
+  "name": "surelock",
+  "version": "0.1.0",
+  "private": true,
+  "author": "SureLock Labs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/surelock-labs/surelock"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "build:packages": "npm run build --workspace=packages/protocol && npm run build --workspace=packages/router && npm run build --workspace=packages/bundler",
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "play": "hardhat play",
+    "node": "hardhat node"
+  },
+  "devDependencies": {
+    "@ethereumjs/trie": "^6.2.1",
+    "@nomicfoundation/hardhat-toolbox": "~6.1.2",
+    "@openzeppelin/contracts-upgradeable": "^5.0.0",
+    "@openzeppelin/hardhat-upgrades": "^3.0.0",
+    "@types/node": "^20.0.0",
+    "dotenv": "^16.4.5",
+    "hardhat": "~2.28.3",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.0"
+  }
+}

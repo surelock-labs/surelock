@@ -1,0 +1,50 @@
+{
+  "name": "@surelock-labs/bundler",
+  "version": "0.1.2",
+  "description": "SDK for bundler operators to register SLA offers, accept commits, settle with MPT proofs, and earn fees via the SureLock protocol",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "erc-4337",
+    "account-abstraction",
+    "bundler",
+    "sla",
+    "ethereum"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "author": "SureLock Labs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/surelock-labs/surelock.git"
+  },
+  "dependencies": {
+    "@ethereumjs/rlp": "^5.0.2",
+    "@ethereumjs/trie": "^6.2.1",
+    "@surelock-labs/protocol": "^0.1.1"
+  },
+  "peerDependencies": {
+    "ethers": "^6.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  }
+}

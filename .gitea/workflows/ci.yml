@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    name: Compile . Test . Simulate
+
+    container:
+      image: node:22-bookworm-slim
+
+    steps:
+      - name: Install system deps
+        run: |
+          set -eux
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends \
+            git \
+            ca-certificates \
+            curl \
+            xz-utils
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv + Slither
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          $HOME/.local/bin/uv tool install slither-analyzer
+
+      - name: Install Aderyn
+        run: |
+          curl --proto '=https' --tlsv1.2 -LsSf \
+            https://github.com/cyfrin/aderyn/releases/latest/download/aderyn-installer.sh \
+            | ADERYN_NO_MODIFY_PATH=1 sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          $HOME/.cargo/bin/aderyn --version
+
+      - name: Install Foundry
+        run: |
+          curl -L https://foundry.paradigm.xyz | bash
+          $HOME/.foundry/bin/foundryup
+          echo "$HOME/.foundry/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build SDK packages
+        run: npm run build:packages
+
+      - name: Compile contracts
+        run: npm run compile
+
+      - name: Run test suite
+        run: npm test
+
+      - name: Run Slither
+        if: always()
+        run: bash audit/_inner.sh slither
+
+      - name: Run Aderyn
+        if: always()
+        run: bash audit/_inner.sh aderyn
+
+      - name: Run invariant fuzz suite (32 runs -- regression gate)
+        if: always()
+        run: FOUNDRY_INVARIANT_RUNS=32 bash audit/audit.sh fuzz

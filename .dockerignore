@@ -1,0 +1,25 @@
+# Exclude build artifacts that the container regenerates itself.
+# NOTE: artifacts/ is intentionally kept -- Slither reads Hardhat artifacts
+# from that directory (--hardhat-artifacts-directory artifacts).
+
+# Hardhat solidity-files-cache.json corrupts Foundry's own cache:
+# forge build errors on it and skips writing to out/, leaving Kontrol
+# with no artifacts to process.
+cache/
+
+# Foundry output -- rebuilt inside the container by forge/kontrol build.
+out/
+
+# npm packages -- reinstalled fresh via npm install in the Dockerfile.
+node_modules/
+
+# Generated TypeScript types -- not needed in the audit image.
+typechain-types/
+dist/
+
+# Previous report runs -- not needed in the image.
+audit/reports/
+
+# forge-std is gitignored but present on disk; the Dockerfile clones it fresh,
+# so exclude it here to avoid "destination path already exists" at build time.
+lib/forge-std/

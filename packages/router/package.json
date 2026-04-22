@@ -1,0 +1,48 @@
+{
+  "name": "@surelock-labs/router",
+  "version": "0.1.2",
+  "description": "Client SDK for SureLock: select bundlers by SLA reputation, commit UserOps with collateral-backed enforcement, and recover fees on misses",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "erc-4337",
+    "account-abstraction",
+    "bundler",
+    "userop",
+    "ethereum"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "author": "SureLock Labs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/surelock-labs/surelock.git"
+  },
+  "dependencies": {
+    "@surelock-labs/protocol": "^0.1.1"
+  },
+  "peerDependencies": {
+    "ethers": "^6.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  }
+}

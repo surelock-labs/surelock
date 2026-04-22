@@ -1,0 +1,716 @@
+// Integration tests for @surelock-labs/bundler against a live in-process Hardhat chain.
+// Deploys real QuoteRegistry + SLAEscrow and exercises the full SureLock bundler lifecycle.
+
+import { expect }   from "chai";
+import { ethers }   from "hardhat";
+import { mine, loadFixture } from "@nomicfoundation/hardhat-network-helpers";
+import type { PendingCommit } from "@surelock-labs/bundler";
+
+import {
+  register,
+  deregister,
+  deposit,
+  withdraw,
+  claimPayout,
+  getCommit,
+  getIdleBalance,
+  getDeposited,
+  watchCommits,
+  accept,
+  settle as sdkSettle,
+} from "@surelock-labs/bundler";
+
+import { buildBlockHeaderRlp, buildReceiptProof } from "./helpers/buildSettleProof";
+
+import {
+  ONE_GWEI,
+  COLLATERAL,
+  MIN_BOND,
+  deployEscrow,
+  deployRealEscrow,
+  mineToRefundable,
+} from "./helpers/fixtures";
+import type { QuoteRegistry, SLAEscrow } from "../typechain-types";
+
+/** Test helper: settle via the 1-arg SLAEscrowTestable overload (no proof required). */
+async function settle(signer: any, escrowAddress: string, commitId: bigint): Promise<void> {
+  const esc = await ethers.getContractAt("SLAEscrowTestable", escrowAddress);
+  const tx = await esc.connect(signer)["settle(uint256)"](commitId);
+  await tx.wait();
+}
+
+// -- fixture ------------------------------------------------------------------
+// Uses shared deployEscrow() with skipRegister:true -- these tests exercise the
+// register() SDK function itself and expect the first registration to return quoteId=1.
+
+async function deploy() {
+  const base = await deployEscrow({ skipRegister: true });
+  return {
+    registry:        base.registry,
+    escrow:          base.escrow,
+    registryAddress: base.registryAddress,
+    escrowAddress:   base.escrowAddress,
+    owner:           base.owner,
+    bundler:         base.bundler,
+    user:            base.user,
+    feeRecipient:    base.feeRecipient,
+    bundler2:        base.bundler2,
+  };
+}
+
+// -- register / deregister -----------------------------------------------------
+
+describe("register", () => {
+  it("registers an offer and returns the quoteId", async () => {
+    const { registryAddress, bundler } = await loadFixture(deploy);
+    const quoteId = await register(bundler, registryAddress, {
+      feePerOp: ONE_GWEI,
+      slaBlocks: 5,
+      collateralWei: COLLATERAL,
+    });
+    expect(quoteId).to.equal(1n);
+  });
+
+  it("each registration increments the quoteId", async () => {
+    const { registryAddress, bundler } = await loadFixture(deploy);
+    const id0 = await register(bundler, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 5, collateralWei: COLLATERAL });
+    const id1 = await register(bundler, registryAddress, { feePerOp: ONE_GWEI * 2n, slaBlocks: 3, collateralWei: COLLATERAL });
+    expect(id0).to.equal(1n);
+    expect(id1).to.equal(2n);
+  });
+
+  it("reverts when collateralWei < feePerOp", async () => {
+    const { registryAddress, bundler } = await loadFixture(deploy);
+    await expect(
+      register(bundler, registryAddress, { feePerOp: ONE_GWEI * 2n, slaBlocks: 5, collateralWei: ONE_GWEI }),
+    ).to.be.rejectedWith(/collateralWei must be > feePerOp|couldn't infer/);
+  });
+
+  it("reverts on zero slaBlocks", async () => {
+    const { registryAddress, bundler } = await loadFixture(deploy);
+    await expect(
+      register(bundler, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 0, collateralWei: COLLATERAL }),
+    ).to.be.rejectedWith(/slaBlocks must be > 0|couldn't infer/);
+  });
+});
+
+describe("deregister", () => {
+  it("deactivates the offer on-chain", async () => {
+    const { registry, registryAddress, bundler } = await loadFixture(deploy);
+    const quoteId = await register(bundler, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 5, collateralWei: COLLATERAL });
+    await deregister(bundler, registryAddress, quoteId);
+    const offer = await registry.getOffer(quoteId);
+    expect(offer.bond).to.equal(0n); // deregistered
+  });
+
+  it("deregistered offer no longer appears in list()", async () => {
+    const { registry, registryAddress, bundler } = await loadFixture(deploy);
+    const quoteId = await register(bundler, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 5, collateralWei: COLLATERAL });
+    await deregister(bundler, registryAddress, quoteId);
+    const offers = await registry.list();
+    expect(offers.length).to.equal(0);
+  });
+
+  it("reverts when caller is not the offer owner", async () => {
+    const { registry, registryAddress, bundler, user } = await loadFixture(deploy);
+    const quoteId = await register(bundler, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 5, collateralWei: COLLATERAL });
+    await expect(deregister(user, registryAddress, quoteId))
+      .to.be.rejectedWith("NotOfferOwner");
+  });
+});
+
+// -- collateral management -----------------------------------------------------
+
+describe("deposit / getIdleBalance / getDeposited", () => {
+  it("increases idle and deposited balances after deposit", async () => {
+    const { escrowAddress, bundler } = await loadFixture(deploy);
+    await deposit(bundler, escrowAddress, COLLATERAL);
+    const idle = await getIdleBalance(ethers.provider, escrowAddress, bundler.address);
+    const total = await getDeposited(ethers.provider, escrowAddress, bundler.address);
+    expect(idle).to.equal(COLLATERAL);
+    expect(total).to.equal(COLLATERAL);
+  });
+
+  it("multiple deposits accumulate correctly", async () => {
+    const { escrowAddress, bundler } = await loadFixture(deploy);
+    await deposit(bundler, escrowAddress, COLLATERAL);
+    await deposit(bundler, escrowAddress, COLLATERAL * 2n);
+    const idle = await getIdleBalance(ethers.provider, escrowAddress, bundler.address);
+    expect(idle).to.equal(COLLATERAL * 3n);
+  });
+
+  it("reverts on zero deposit", async () => {
+    const { escrowAddress, bundler } = await loadFixture(deploy);
+    await expect(deposit(bundler, escrowAddress, 0n)).to.be.rejectedWith("ZeroDeposit");
+  });
+});
+
+describe("withdraw", () => {
+  it("reduces idle balance after withdrawal", async () => {
+    const { escrowAddress, bundler } = await loadFixture(deploy);
+    await deposit(bundler, escrowAddress, COLLATERAL);
+    await withdraw(bundler, escrowAddress, COLLATERAL / 2n);
+    const idle = await getIdleBalance(ethers.provider, escrowAddress, bundler.address);
+    expect(idle).to.equal(COLLATERAL / 2n);
+  });
+
+  it("can withdraw the entire idle balance", async () => {
+    const { escrowAddress, bundler } = await loadFixture(deploy);
+    await deposit(bundler, escrowAddress, COLLATERAL);
+    await withdraw(bundler, escrowAddress, COLLATERAL);
+    expect(await getIdleBalance(ethers.provider, escrowAddress, bundler.address)).to.equal(0n);
+  });
+
+  it("reverts when withdrawing more than idle", async () => {
+    const { escrowAddress, bundler } = await loadFixture(deploy);
+    await deposit(bundler, escrowAddress, COLLATERAL);
+    await expect(withdraw(bundler, escrowAddress, COLLATERAL * 2n)).to.be.rejectedWith("InsufficientIdle");
+  });
+});
+
+// -- settle + claimPayout ------------------------------------------------------
+
+describe("settle + claimPayout", () => {
+  async function setupCommit() {
+    const fix = await loadFixture(deploy);
+    const { registryAddress, escrowAddress, bundler, user } = fix;
+
+    const quoteId = await register(bundler, registryAddress, {
+      feePerOp: ONE_GWEI,
+      slaBlocks: 10,
+      collateralWei: COLLATERAL,
+    });
+    await deposit(bundler, escrowAddress, COLLATERAL);
+
+    // User commits directly via ethers (simulating the router side)
+    const escrow = await ethers.getContractAt("SLAEscrow", escrowAddress);
+    const registry = await ethers.getContractAt("QuoteRegistry", registryAddress);
+    const offer = await registry.getOffer(quoteId);
+    const userOp = ethers.keccak256(ethers.toUtf8Bytes("test-userop"));
+    const tx = await escrow.connect(user).commit(quoteId, userOp, offer.bundler, offer.collateralWei, offer.slaBlocks, { value: offer.feePerOp });
+    const receipt = await tx.wait();
+    const log = receipt!.logs
+      .map((l: any) => { try { return escrow.interface.parseLog(l); } catch { return null; } })
+      .find((e: any) => e?.name === "CommitCreated");
+    const commitId = BigInt(log!.args.commitId);
+
+    // Two-phase commit: bundler must accept() to transition PROPOSED -> ACTIVE
+    const escrowFull = await ethers.getContractAt("SLAEscrowTestable", escrowAddress);
+    await escrowFull.connect(bundler).accept(commitId);
+
+    return { ...fix, commitId, quoteId };
+  }
+
+  it("settle marks the commit as settled", async () => {
+    const { escrowAddress, bundler, commitId } = await setupCommit();
+    await settle(bundler, escrowAddress, commitId);
+    const info = await getCommit(ethers.provider, escrowAddress, commitId);
+    expect(info.settled).to.be.true;
+    expect(info.refunded).to.be.false;
+  });
+
+  it("settle queues the full fee for bundler payout (PROTOCOL_FEE_WEI=0)", async () => {
+    const { escrow, escrowAddress, bundler, commitId } = await setupCommit();
+    await settle(bundler, escrowAddress, commitId);
+    const pending = BigInt(await escrow.pendingWithdrawals(bundler.address));
+    expect(pending).to.equal(ONE_GWEI);
+  });
+
+  it("claimPayout transfers the pending amount to the bundler", async () => {
+    const { escrow, escrowAddress, bundler, commitId } = await setupCommit();
+    await settle(bundler, escrowAddress, commitId);
+
+    const claimed = await claimPayout(bundler, escrowAddress);
+    expect(claimed).to.equal(ONE_GWEI);
+
+    // pendingWithdrawals cleared
+    const pending = BigInt(await escrow.pendingWithdrawals(bundler.address));
+    expect(pending).to.equal(0n);
+  });
+
+  it("claimPayout returns 0 when there is nothing pending", async () => {
+    const { escrowAddress, bundler } = await loadFixture(deploy);
+    const claimed = await claimPayout(bundler, escrowAddress);
+    expect(claimed).to.equal(0n);
+  });
+
+  it("reverts settling after deadline", async () => {
+    const { escrow, escrowAddress, bundler, commitId } = await setupCommit();
+    // Mine past deadline + settlement grace + refund grace so settle() reverts.
+    await mineToRefundable(escrow, commitId);
+    await expect(settle(bundler, escrowAddress, commitId))
+      .to.be.rejectedWith("DeadlinePassed");
+  });
+
+  it("a non-bundler can settle (permissionless); fee routes to bundler", async () => {
+    const { escrowAddress, user, bundler, commitId } = await setupCommit();
+    const pendingBefore = await (await ethers.getContractAt("SLAEscrow", escrowAddress)).pendingWithdrawals(bundler.address);
+    await settle(user, escrowAddress, commitId);
+    const pendingAfter = await (await ethers.getContractAt("SLAEscrow", escrowAddress)).pendingWithdrawals(bundler.address);
+    // PROTOCOL_FEE_WEI=0 -> bundler gets full feePerOp credited on settle().
+    expect(pendingAfter).to.equal(pendingBefore + ONE_GWEI);
+  });
+});
+
+// -- getCommit -----------------------------------------------------------------
+
+describe("getCommit", () => {
+  it("returns correct commit fields", async () => {
+    const { registryAddress, escrowAddress, bundler, user } = await loadFixture(deploy);
+    const slaBlocks = 5;
+    const quoteId = await register(bundler, registryAddress, { feePerOp: ONE_GWEI, slaBlocks, collateralWei: COLLATERAL });
+    await deposit(bundler, escrowAddress, COLLATERAL);
+
+    const escrow = await ethers.getContractAt("SLAEscrow", escrowAddress);
+    const registry = await ethers.getContractAt("QuoteRegistry", registryAddress);
+    const offer = await registry.getOffer(quoteId);
+    const userOpHash = ethers.keccak256(ethers.toUtf8Bytes("get-commit-test"));
+    const tx = await escrow.connect(user).commit(quoteId, userOpHash, offer.bundler, offer.collateralWei, offer.slaBlocks, { value: offer.feePerOp });
+    const receipt = await tx.wait();
+    const log = receipt!.logs
+      .map((l: any) => { try { return escrow.interface.parseLog(l); } catch { return null; } })
+      .find((e: any) => e?.name === "CommitCreated");
+    const commitId = BigInt(log!.args.commitId);
+
+    // Two-phase commit: accept() sets the deadline (PROPOSED -> ACTIVE)
+    const escrowTestable = await ethers.getContractAt("SLAEscrowTestable", escrowAddress);
+    const acceptTx = await escrowTestable.connect(bundler).accept(commitId);
+    const acceptRcpt = await acceptTx.wait();
+    const acceptBlock = BigInt(acceptRcpt!.blockNumber);
+
+    const info = await getCommit(ethers.provider, escrowAddress, commitId);
+
+    expect(info.commitId).to.equal(commitId);
+    expect(info.user.toLowerCase()).to.equal(user.address.toLowerCase());
+    expect(info.bundler.toLowerCase()).to.equal(bundler.address.toLowerCase());
+    expect(info.feePaid).to.equal(ONE_GWEI);
+    expect(info.collateralLocked).to.equal(COLLATERAL);
+    expect(info.quoteId).to.equal(quoteId);
+    expect(info.userOpHash).to.equal(userOpHash);
+    expect(info.settled).to.be.false;
+    expect(info.refunded).to.be.false;
+    // deadline set exactly at accept() block + slaBlocks (T9).
+    expect(info.deadline).to.equal(acceptBlock + BigInt(slaBlocks));
+  });
+});
+
+// -- watchCommits --------------------------------------------------------------
+
+describe("watchCommits", () => {
+  it("fires the callback when a commit is directed at the bundler", async () => {
+    const { escrow: escrowContract, registryAddress, escrowAddress, bundler, user } = await loadFixture(deploy);
+    const quoteId = await register(bundler, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 5, collateralWei: COLLATERAL });
+    await deposit(bundler, escrowAddress, COLLATERAL);
+
+    const userOp = ethers.keccak256(ethers.toUtf8Bytes("watch-test"));
+
+    // Set up a promise that resolves when the callback fires; also capture the
+    // commit block so we can assert acceptDeadline exactly.
+    let commitBlock: bigint = 0n;
+    const received = await new Promise<PendingCommit>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("watchCommits timeout")), 10_000);
+      const unwatch = watchCommits(ethers.provider, escrowAddress, bundler.address, (c) => {
+        clearTimeout(timer);
+        unwatch();
+        resolve(c);
+      });
+
+      const escrow = ethers.getContractAt("SLAEscrow", escrowAddress).then(async (e) => {
+        const reg = await ethers.getContractAt("QuoteRegistry", registryAddress);
+        const offer = await reg.getOffer(quoteId);
+        return e.connect(user).commit(quoteId, userOp, offer.bundler, offer.collateralWei, offer.slaBlocks, { value: offer.feePerOp });
+      }).then(async (tx) => {
+        const rcpt = await tx.wait();
+        commitBlock = BigInt(rcpt!.blockNumber);
+      }).catch(reject);
+    });
+
+    const accGrace = BigInt(await escrowContract.ACCEPT_GRACE_BLOCKS());
+    expect(received.userOpHash).to.equal(userOp);
+    expect(received.quoteId).to.equal(quoteId);
+    // acceptDeadline set at commit() to commitBlock + ACCEPT_GRACE_BLOCKS (exact).
+    expect(received.acceptDeadline).to.equal(commitBlock + accGrace);
+  });
+
+  it("does NOT fire for commits directed at a different bundler", async () => {
+    const { registryAddress, escrowAddress, bundler, user, bundler2 } = await loadFixture(deploy);
+    const quoteId = await register(bundler, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 5, collateralWei: COLLATERAL });
+    await deposit(bundler, escrowAddress, COLLATERAL);
+
+    const received: PendingCommit[] = [];
+    // Watch for bundler2, but commits go to bundler
+    const unwatch = watchCommits(ethers.provider, escrowAddress, bundler2.address, (c) => {
+      received.push(c);
+    });
+
+    const escrow = await ethers.getContractAt("SLAEscrow", escrowAddress);
+    const registry = await ethers.getContractAt("QuoteRegistry", registryAddress);
+    const offer = await registry.getOffer(quoteId);
+    await escrow.connect(user).commit(quoteId, ethers.keccak256(ethers.toUtf8Bytes("not-for-you")), offer.bundler, offer.collateralWei, offer.slaBlocks, { value: offer.feePerOp });
+    await new Promise((r) => setTimeout(r, 50));
+
+    unwatch();
+    expect(received).to.have.length(0);
+  });
+
+  it("stops firing after unwatch() is called", async () => {
+    const { registryAddress, escrowAddress, bundler, user } = await loadFixture(deploy);
+    const quoteId = await register(bundler, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 5, collateralWei: COLLATERAL });
+    await deposit(bundler, escrowAddress, COLLATERAL * 2n);
+
+    const received: PendingCommit[] = [];
+    const unwatch = watchCommits(ethers.provider, escrowAddress, bundler.address, (c) => {
+      received.push(c);
+    });
+
+    const escrow = await ethers.getContractAt("SLAEscrow", escrowAddress);
+    const registry = await ethers.getContractAt("QuoteRegistry", registryAddress);
+    const offer = await registry.getOffer(quoteId);
+    await escrow.connect(user).commit(quoteId, ethers.keccak256(ethers.toUtf8Bytes("before")), offer.bundler, offer.collateralWei, offer.slaBlocks, { value: offer.feePerOp });
+    await new Promise((r) => setTimeout(r, 50));
+
+    unwatch();
+
+    await escrow.connect(user).commit(quoteId, ethers.keccak256(ethers.toUtf8Bytes("after")), offer.bundler, offer.collateralWei, offer.slaBlocks, { value: offer.feePerOp });
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(received).to.have.length(1); // only the first commit
+  });
+});
+
+// -- full happy-path flow ------------------------------------------------------
+
+describe("full happy-path (register -> deposit -> commit -> settle -> claim)", () => {
+  it("bundler earns the net fee end-to-end", async () => {
+    const { registryAddress, escrowAddress, bundler, user, feeRecipient } = await loadFixture(deploy);
+
+    // 1. Register and deposit
+    const quoteId = await register(bundler, registryAddress, {
+      feePerOp: ONE_GWEI,
+      slaBlocks: 10,
+      collateralWei: COLLATERAL,
+    });
+    await deposit(bundler, escrowAddress, COLLATERAL);
+
+    // 2. User commits (router side)
+    const escrow = await ethers.getContractAt("SLAEscrow", escrowAddress);
+    const registry = await ethers.getContractAt("QuoteRegistry", registryAddress);
+    const offer = await registry.getOffer(quoteId);
+    const userOp = ethers.keccak256(ethers.toUtf8Bytes("e2e-happy"));
+    const commitTx = await escrow.connect(user).commit(quoteId, userOp, offer.bundler, offer.collateralWei, offer.slaBlocks, { value: offer.feePerOp });
+    const commitReceipt = await commitTx.wait();
+    const log = commitReceipt!.logs
+      .map((l: any) => { try { return escrow.interface.parseLog(l); } catch { return null; } })
+      .find((e: any) => e?.name === "CommitCreated");
+    const commitId = BigInt(log!.args.commitId);
+
+    // Two-phase commit: bundler must accept() to transition PROPOSED -> ACTIVE
+    const escrowTestable = await ethers.getContractAt("SLAEscrowTestable", escrowAddress);
+    await escrowTestable.connect(bundler).accept(commitId);
+
+    // 3. Collateral is locked during the commitment
+    const idleDuring = await getIdleBalance(ethers.provider, escrowAddress, bundler.address);
+    expect(idleDuring).to.equal(0n); // all COLLATERAL locked
+
+    // 4. Bundler settles
+    await settle(bundler, escrowAddress, commitId);
+
+    // 5. Collateral unlocked, fee queued
+    const idleAfter = await getIdleBalance(ethers.provider, escrowAddress, bundler.address);
+    expect(idleAfter).to.equal(COLLATERAL);
+
+
+
+    // 6. Claim payouts
+    const escrowInst = await ethers.getContractAt("SLAEscrow", escrowAddress);
+    await claimPayout(bundler, escrowAddress);
+    expect(BigInt(await escrowInst.pendingWithdrawals(bundler.address))).to.equal(0n);
+
+    // 7. Contract should hold only the deposited collateral now
+    const contractBal = await ethers.provider.getBalance(escrowAddress);
+    expect(contractBal).to.equal(COLLATERAL);
+  });
+});
+
+// -- settle (real A10 proof via SDK + real SLAEscrow) --------------------------
+
+describe("settle (real A10 proof via SDK + real SLAEscrow)", () => {
+  it("SDK settle() calls the real 5-arg proof path and settles the commit (A10)", async () => {
+    const { registry, escrow, escrowAddress, bundler, user, mockEP } = await deployRealEscrow();
+
+    await registry.connect(bundler).register(ONE_GWEI, 10, COLLATERAL, 302_400, { value: MIN_BOND });
+    await escrow.connect(bundler).deposit({ value: COLLATERAL });
+
+    const userOpHash = ethers.keccak256(ethers.toUtf8Bytes("sdk-a10-settle"));
+    const commitTx = await escrow.connect(user).commit(
+      1n, userOpHash, bundler.address, COLLATERAL, 10, { value: ONE_GWEI },
+    );
+    await commitTx.wait();
+    const commitId = 0n;
+    await accept(bundler, escrowAddress, commitId);
+
+    const inclusionTx = await mockEP.connect(bundler).handleOp(userOpHash);
+    const inclusionReceipt = await inclusionTx.wait();
+
+    const rpc = { send: (m: string, p: unknown[]) => ethers.provider.send(m, p) };
+    const blockHeaderRlp = await buildBlockHeaderRlp(rpc, inclusionReceipt.blockNumber);
+    const { proofNodes, txIndex } = await buildReceiptProof(rpc, inclusionReceipt.blockNumber, inclusionReceipt.hash);
+
+    await sdkSettle(
+      bundler, escrowAddress, commitId,
+      BigInt(inclusionReceipt.blockNumber), blockHeaderRlp, proofNodes, txIndex,
+    );
+
+    const info = await getCommit(ethers.provider, escrowAddress, commitId);
+    expect(info.settled).to.be.true;
+    expect(await escrow.pendingWithdrawals(bundler.address)).to.equal(ONE_GWEI);
+  });
+
+  it("SDK settle() propagates InvalidInclusionProof when UserOp success=false (A1)", async () => {
+    const { registry, escrow, escrowAddress, bundler, user, mockEP } = await deployRealEscrow();
+
+    await registry.connect(bundler).register(ONE_GWEI, 10, COLLATERAL, 302_400, { value: MIN_BOND });
+    await escrow.connect(bundler).deposit({ value: COLLATERAL });
+
+    const userOpHash = ethers.keccak256(ethers.toUtf8Bytes("sdk-failed-a1"));
+    await escrow.connect(user).commit(1n, userOpHash, bundler.address, COLLATERAL, 10, { value: ONE_GWEI });
+    await accept(bundler, escrowAddress, 0n);
+
+    const tx = await mockEP.connect(bundler).handleFailedOp(userOpHash);
+    const receipt = await tx.wait();
+
+    const rpc = { send: (m: string, p: unknown[]) => ethers.provider.send(m, p) };
+    const blockHeaderRlp = await buildBlockHeaderRlp(rpc, receipt.blockNumber);
+    const { proofNodes, txIndex } = await buildReceiptProof(rpc, receipt.blockNumber, receipt.hash);
+
+    await expect(
+      sdkSettle(bundler, escrowAddress, 0n, BigInt(receipt.blockNumber), blockHeaderRlp, proofNodes, txIndex),
+    ).to.be.rejectedWith("InvalidInclusionProof");
+  });
+});
+
+// -- PROTOCOL_FEE_WEI > 0 economics -------------------------------------------
+
+const FLAT_FEE = 5_000n;
+
+async function deployWithFee() {
+  const base = await deployEscrow({ skipRegister: true, protocolFeeWei: FLAT_FEE });
+  return { ...base, FLAT_FEE };
+}
+
+describe("PROTOCOL_FEE_WEI > 0 economics", () => {
+  async function registerAndDeposit(fix: Awaited<ReturnType<typeof deployWithFee>>) {
+    const quoteId = await register(fix.bundler, fix.registryAddress, {
+      feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL,
+    });
+    await deposit(fix.bundler, fix.escrowAddress, COLLATERAL);
+    const registry = await ethers.getContractAt("QuoteRegistry", fix.registryAddress);
+    const offer    = await registry.getOffer(quoteId);
+    return { quoteId, offer };
+  }
+
+  it("commit requires feePerOp + protocolFeeWei; sending only feePerOp reverts WrongFee", async () => {
+    const fix = await deployWithFee();
+    const { quoteId, offer } = await registerAndDeposit(fix);
+    const userOp = ethers.keccak256(ethers.toUtf8Bytes("wrong-fee-test"));
+
+    await expect(
+      fix.escrow.connect(fix.user).commit(
+        quoteId, userOp, offer.bundler, offer.collateralWei, offer.slaBlocks,
+        { value: ONE_GWEI },
+      ),
+    ).to.be.revertedWithCustomError(fix.escrow, "WrongFee");
+
+    await fix.escrow.connect(fix.user).commit(
+      quoteId, userOp, offer.bundler, offer.collateralWei, offer.slaBlocks,
+      { value: ONE_GWEI + FLAT_FEE },
+    );
+  });
+
+  it("protocolFeeWei credited to feeRecipient at commit, before settle", async () => {
+    const fix = await deployWithFee();
+    const { quoteId, offer } = await registerAndDeposit(fix);
+
+    const pendingBefore = BigInt(await fix.escrow.pendingWithdrawals(fix.feeRecipient.address));
+    await fix.escrow.connect(fix.user).commit(
+      quoteId, ethers.keccak256(ethers.toUtf8Bytes("fee-credit")),
+      offer.bundler, offer.collateralWei, offer.slaBlocks,
+      { value: ONE_GWEI + FLAT_FEE },
+    );
+    expect(await fix.escrow.pendingWithdrawals(fix.feeRecipient.address)).to.equal(pendingBefore + FLAT_FEE);
+  });
+
+  it("cancel returns feePerOp to user; protocolFee stays with feeRecipient (T4)", async () => {
+    const fix = await deployWithFee();
+    const { quoteId, offer } = await registerAndDeposit(fix);
+
+    const commitTx = await fix.escrow.connect(fix.user).commit(
+      quoteId, ethers.keccak256(ethers.toUtf8Bytes("cancel-fee")),
+      offer.bundler, offer.collateralWei, offer.slaBlocks,
+      { value: ONE_GWEI + FLAT_FEE },
+    );
+    const rcpt = await commitTx.wait();
+    const log  = rcpt!.logs
+      .map((l: any) => { try { return fix.escrow.interface.parseLog(l); } catch { return null; } })
+      .find((e: any) => e?.name === "CommitCreated");
+    const commitId = BigInt(log!.args.commitId);
+
+    await fix.escrow.connect(fix.user).cancel(commitId);
+
+    expect(await fix.escrow.pendingWithdrawals(fix.user.address)).to.equal(ONE_GWEI);
+    expect(await fix.escrow.pendingWithdrawals(fix.feeRecipient.address)).to.equal(FLAT_FEE);
+  });
+
+  it("claimRefund returns feePerOp + collateral to user; protocolFee stays (T11)", async () => {
+    const fix = await deployWithFee();
+    const { quoteId, offer } = await registerAndDeposit(fix);
+
+    const commitTx = await fix.escrow.connect(fix.user).commit(
+      quoteId, ethers.keccak256(ethers.toUtf8Bytes("refund-fee")),
+      offer.bundler, offer.collateralWei, offer.slaBlocks,
+      { value: ONE_GWEI + FLAT_FEE },
+    );
+    const rcpt = await commitTx.wait();
+    const log  = rcpt!.logs
+      .map((l: any) => { try { return fix.escrow.interface.parseLog(l); } catch { return null; } })
+      .find((e: any) => e?.name === "CommitCreated");
+    const commitId = BigInt(log!.args.commitId);
+
+    const escrowTestable = await ethers.getContractAt("SLAEscrowTestable", fix.escrowAddress);
+    await escrowTestable.connect(fix.bundler).accept(commitId);
+    await mineToRefundable(fix.escrow, commitId);
+    await fix.escrow.connect(fix.user).claimRefund(commitId);
+
+    expect(await fix.escrow.pendingWithdrawals(fix.user.address)).to.equal(ONE_GWEI + COLLATERAL);
+    expect(await fix.escrow.pendingWithdrawals(fix.feeRecipient.address)).to.equal(FLAT_FEE);
+    expect(await getIdleBalance(ethers.provider, fix.escrowAddress, fix.bundler.address)).to.equal(0n);
+  });
+
+  it("settle credits feePerOp to bundler; feeRecipient retains protocolFee from commit", async () => {
+    const fix = await deployWithFee();
+    const { quoteId, offer } = await registerAndDeposit(fix);
+
+    const commitTx = await fix.escrow.connect(fix.user).commit(
+      quoteId, ethers.keccak256(ethers.toUtf8Bytes("settle-fee")),
+      offer.bundler, offer.collateralWei, offer.slaBlocks,
+      { value: ONE_GWEI + FLAT_FEE },
+    );
+    const rcpt = await commitTx.wait();
+    const log  = rcpt!.logs
+      .map((l: any) => { try { return fix.escrow.interface.parseLog(l); } catch { return null; } })
+      .find((e: any) => e?.name === "CommitCreated");
+    const commitId = BigInt(log!.args.commitId);
+
+    const escrowTestable = await ethers.getContractAt("SLAEscrowTestable", fix.escrowAddress);
+    await escrowTestable.connect(fix.bundler).accept(commitId);
+    await settle(fix.bundler, fix.escrowAddress, commitId);
+
+    expect(await fix.escrow.pendingWithdrawals(fix.bundler.address)).to.equal(ONE_GWEI);
+    expect(await fix.escrow.pendingWithdrawals(fix.feeRecipient.address)).to.equal(FLAT_FEE);
+  });
+});
+
+// -- cancel / claimRefund cleanup flows ----------------------------------------
+
+describe("cancel / claimRefund cleanup flows", () => {
+  async function setupOffer() {
+    const fix = await loadFixture(deploy);
+    const quoteId = await register(fix.bundler, fix.registryAddress, {
+      feePerOp: ONE_GWEI, slaBlocks: 5, collateralWei: COLLATERAL,
+    });
+    await deposit(fix.bundler, fix.escrowAddress, COLLATERAL);
+    return { ...fix, quoteId };
+  }
+
+  async function commitOp(fix: Awaited<ReturnType<typeof setupOffer>>, tag: string) {
+    const escrow   = await ethers.getContractAt("SLAEscrow", fix.escrowAddress);
+    const registry = await ethers.getContractAt("QuoteRegistry", fix.registryAddress);
+    const offer    = await registry.getOffer(fix.quoteId);
+    const userOp   = ethers.keccak256(ethers.toUtf8Bytes(tag));
+    const tx = await escrow.connect(fix.user).commit(
+      fix.quoteId, userOp, offer.bundler, offer.collateralWei, offer.slaBlocks,
+      { value: offer.feePerOp },
+    );
+    const receipt = await tx.wait();
+    const log = receipt!.logs
+      .map((l: any) => { try { return escrow.interface.parseLog(l); } catch { return null; } })
+      .find((e: any) => e?.name === "CommitCreated");
+    return BigInt(log!.args.commitId);
+  }
+
+  it("client can cancel a PROPOSED commit during the accept window", async () => {
+    const fix = await setupOffer();
+    const commitId = await commitOp(fix, "cancel-proposed");
+    const escrow = await ethers.getContractAt("SLAEscrow", fix.escrowAddress);
+
+    await escrow.connect(fix.user).cancel(commitId);
+
+    const info = await getCommit(ethers.provider, fix.escrowAddress, commitId);
+    expect(info.cancelled).to.be.true;
+    expect(info.settled).to.be.false;
+    // feePerOp queued to user; collateral never locked (commit was PROPOSED)
+    expect(await escrow.pendingWithdrawals(fix.user.address)).to.equal(ONE_GWEI);
+    expect(await getIdleBalance(ethers.provider, fix.escrowAddress, fix.bundler.address)).to.equal(COLLATERAL);
+  });
+
+  it("bundler can cancel a PROPOSED commit after the accept window expires", async () => {
+    const fix = await setupOffer();
+    const commitId = await commitOp(fix, "cancel-expired");
+    const escrow = await ethers.getContractAt("SLAEscrow", fix.escrowAddress);
+
+    await mine(Number(await escrow.ACCEPT_GRACE_BLOCKS()) + 1);
+    await escrow.connect(fix.bundler).cancel(commitId);
+
+    const info = await getCommit(ethers.provider, fix.escrowAddress, commitId);
+    expect(info.cancelled).to.be.true;
+    expect(await escrow.pendingWithdrawals(fix.user.address)).to.equal(ONE_GWEI);
+  });
+
+  it("user can claimRefund after the SLA deadline + grace periods expire (T11)", async () => {
+    const fix = await setupOffer();
+    const commitId = await commitOp(fix, "refund-claim");
+    const escrow = await ethers.getContractAt("SLAEscrow", fix.escrowAddress);
+    const escrowTestable = await ethers.getContractAt("SLAEscrowTestable", fix.escrowAddress);
+
+    await escrowTestable.connect(fix.bundler).accept(commitId);
+    await mineToRefundable(fix.escrow, commitId);
+    await escrow.connect(fix.user).claimRefund(commitId);
+
+    expect(await escrow.pendingWithdrawals(fix.user.address)).to.equal(ONE_GWEI + COLLATERAL);
+    expect(await getIdleBalance(ethers.provider, fix.escrowAddress, fix.bundler.address)).to.equal(0n);
+  });
+});
+
+// -- watchCommits data usability -----------------------------------------------
+
+describe("watchCommits data usability", () => {
+  it("callback commitId is sufficient to call SDK accept() immediately", async () => {
+    const { escrow: escrowContract, registryAddress, escrowAddress, bundler, user } = await loadFixture(deploy);
+    const quoteId = await register(bundler, registryAddress, {
+      feePerOp: ONE_GWEI, slaBlocks: 5, collateralWei: COLLATERAL,
+    });
+    await deposit(bundler, escrowAddress, COLLATERAL);
+
+    const userOp = ethers.keccak256(ethers.toUtf8Bytes("watch-usability"));
+    const received = await new Promise<import("@surelock-labs/bundler").PendingCommit>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("watchCommits timeout")), 10_000);
+      const unwatch = watchCommits(ethers.provider, escrowAddress, bundler.address, (c) => {
+        clearTimeout(timer);
+        unwatch();
+        resolve(c);
+      });
+
+      ethers.getContractAt("SLAEscrow", escrowAddress).then(async (e) => {
+        const reg   = await ethers.getContractAt("QuoteRegistry", registryAddress);
+        const offer = await reg.getOffer(quoteId);
+        return e.connect(user).commit(quoteId, userOp, offer.bundler, offer.collateralWei, offer.slaBlocks, { value: offer.feePerOp });
+      }).then((tx) => tx.wait()).catch(reject);
+    });
+
+    await accept(bundler, escrowAddress, received.commitId);
+
+    const info = await getCommit(ethers.provider, escrowAddress, received.commitId);
+    expect(info.accepted).to.be.true;
+    expect(info.deadline).to.be.greaterThan(0n);
+  });
+});
