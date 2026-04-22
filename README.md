@@ -1,5 +1,9 @@
 # SureLock
 
+[![@surelock-labs/protocol](https://img.shields.io/npm/v/@surelock-labs/protocol?label=%40surelock-labs%2Fprotocol)](https://www.npmjs.com/package/@surelock-labs/protocol)
+[![@surelock-labs/router](https://img.shields.io/npm/v/@surelock-labs/router?label=%40surelock-labs%2Frouter)](https://www.npmjs.com/package/@surelock-labs/router)
+[![@surelock-labs/bundler](https://img.shields.io/npm/v/@surelock-labs/bundler?label=%40surelock-labs%2Fbundler)](https://www.npmjs.com/package/@surelock-labs/bundler)
+
 On-chain SLA enforcement for ERC-4337 bundlers.
 
 A bundler posts collateral and commits to including your UserOp within N blocks. If they miss the deadline, collateral is slashed. No arbitration, no trusted oracle, no off-chain attestation.
@@ -87,13 +91,14 @@ const router = createRouter({
   escrowAddress:    escrow,
 });
 
-// Pick the most reliable offer and commit a UserOp
-const offers = await router.fetchQuotes();
-const best   = router.selectReliable(offers); // scores by acceptRate, settleRate, avgTimeToAccept
-if (!best) throw new Error("no active offers");
+// selectReliable() scores bundlers by acceptRate, settleRate, idleRatio,
+// and median time-to-accept -- then picks the highest-scoring offer with
+// enough idle collateral to actually accept right now.
+const best = await router.selectReliable();
+if (!best) throw new Error("no reliable offers");
 
 const { commitId } = await router.commitOp(signer, best, userOpHash);
-// bundler must accept within 12 blocks (~24s) or client can cancel and recover fee
+// bundler must accept within ACCEPT_GRACE_BLOCKS or client can cancel and recover fee
 ```
 
 ### Bundler quick start
@@ -102,24 +107,28 @@ const { commitId } = await router.commitOp(signer, best, userOpHash);
 import { createBundlerClient, DEPLOYMENTS } from "@surelock-labs/bundler";
 import { ethers } from "ethers";
 
+const dep = DEPLOYMENTS[84532]; // Base Sepolia
 const client = createBundlerClient({
-  rpcUrl: "https://sepolia.base.org",
-  ...DEPLOYMENTS[84532],
+  rpcUrl:          "https://sepolia.base.org",
+  registryAddress: dep.registry,
+  escrowAddress:   dep.escrow,
 });
 
 await client.deposit(signer, ethers.parseEther("0.1"));
 
-const quoteId = await client.register(signer, {
+const offer = await client.register(signer, {
   feePerOp:      ethers.parseUnits("100", "gwei"),
   slaBlocks:     10,                                // ~20s on Base
   collateralWei: ethers.parseUnits("200", "gwei"), // must be strictly > feePerOp
 });
+// offer.quoteId, offer.bundler, etc. are all populated
 
 client.watchCommits(signer.address, async (commit) => {
   await client.accept(signer, commit.commitId);
-  // include commit.userOpHash via EntryPoint, then:
-  const proof = await client.buildSettleProof(provider, inclusionTxHash);
-  await client.settle(signer, commit.commitId, proof);
+  // ...include commit.userOpHash via EntryPoint, then after it mines:
+  const { blockHeaderRlp, receiptProof, txIndex } =
+    await client.buildSettleProof(inclusionBlock, inclusionTxHash);
+  await client.settle(signer, commit.commitId, BigInt(inclusionBlock), blockHeaderRlp, receiptProof, txIndex);
 });
 ```
 

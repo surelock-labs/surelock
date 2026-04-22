@@ -205,7 +205,7 @@ async function main() {
     console.log(`  registered quoteId=${benchQuoteId}`);
     record("QuoteRegistry", "register()", regReceipt!);
 
-    // ---- Step 2: QuoteRegistry.renew() --------------------------------------
+    await waitForBlock(ethers.provider, regReceipt!.blockNumber + 1, "state propagate");
 
     STEP(2, "QuoteRegistry.renew()");
 
@@ -223,7 +223,7 @@ async function main() {
     console.log(`  deposited ${eth(BENCH_COLL_WEI * 2n)}`);
     record("SLAEscrow", "deposit()", depositReceipt!);
 
-    // ---- Step 4: SLAEscrow.commit() -- commit A (will be accepted + SLA miss)
+    await waitForBlock(ethers.provider, depositReceipt!.blockNumber + 1, "state propagate");
 
     STEP(4, "SLAEscrow.commit() -- path A (accept + SLA miss)");
 

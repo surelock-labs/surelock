@@ -190,8 +190,13 @@ async function main() {
 
     STEP("4", "Bundler discovers commit and accepts");
 
-    const pending = await fetchPendingCommits(provider, deployment.escrow, bundlerWallet.address, commitBlock);
-    if (pending.length === 0) throw new Error("Bundler: no pending commits found");
+    let pending: Awaited<ReturnType<typeof fetchPendingCommits>> = [];
+    for (let attempt = 0; attempt < 10; attempt++) {
+        pending = await fetchPendingCommits(provider, deployment.escrow, bundlerWallet.address, commitBlock);
+        if (pending.length > 0) break;
+        await new Promise(r => setTimeout(r, 1500));
+    }
+    if (pending.length === 0) throw new Error("Bundler: no pending commits found after 10 tries");
     const { commitId } = pending[0];
     info("discovered commitId", commitId.toString());
 
