@@ -31,6 +31,8 @@ async function main() {
         console.warn("   Set FEE_RECIPIENT in .env to a dedicated wallet or multisig before mainnet.\n");
     }
 
+    const deployedAtBlock = await ethers.provider.getBlockNumber();
+
     console.log(`Network:      ${network.name} (chainId ${chainId})`);
     console.log(`Deployer:     ${deployer.address}`);
     console.log(`Balance:      ${ethers.formatEther(await ethers.provider.getBalance(deployer.address))} ETH`);
@@ -159,7 +161,7 @@ async function main() {
         feeRecipient:       feeRecipient,
         entryPoint:         ENTRY_POINT,
         deployedAt:         new Date().toISOString(),
-        deployedAtBlock:    await ethers.provider.getBlockNumber(),
+        deployedAtBlock:    deployedAtBlock,
         deployer:           deployer.address,
     };
 
