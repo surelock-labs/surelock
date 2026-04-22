@@ -1,5 +1,10 @@
 # @surelock-labs/bundler
 
+## 0.1.10
+
+- Moved shared primitives to `@surelock-labs/protocol` -- `ENTRY_POINT_V06`, `computeUserOpHash`, `UserOperation`, `readEscrowConstants`, `readRegistryConstants`, `EscrowConstants`, `RegistryConstants`. They remain re-exported from `@surelock-labs/bundler`, so integrator imports are unchanged.
+- Bumped protocol pin to `^0.1.10`.
+
 ## 0.1.9
 
 - Added `ENTRY_POINT_V06` -- canonical ERC-4337 v0.6 EntryPoint address constant.

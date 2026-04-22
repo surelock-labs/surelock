@@ -4,7 +4,7 @@
 import { expect }   from "chai";
 import { ethers }   from "hardhat";
 import { loadFixture } from "@nomicfoundation/hardhat-network-helpers";
-import { fetchQuotes, selectBest, commitOp, cancel, claimRefund, claimPayout } from "@surelock-labs/router";
+import { fetchQuotes, selectBest, commitOp, cancel, claimRefund, claimPayout, totalCommitValue } from "@surelock-labs/router";
 import type { Offer } from "@surelock-labs/router";
 import { register, deposit, accept } from "@surelock-labs/bundler";
 
@@ -310,5 +310,33 @@ describe("cancel / claimRefund / claimPayout (router SDK)", () => {
     const { escrowAddress, user } = await deployEscrow();
     const claimed = await claimPayout(user, escrowAddress);
     expect(claimed).to.equal(0n);
+  });
+
+  it("claimPayout fromBlock pins the pendingWithdrawals read to a specific block", async () => {
+    const { escrowAddress, escrow, user, offer } = await deployEscrow();
+    const userOpHash = ethers.keccak256(ethers.toUtf8Bytes("payout-pinned"));
+    const { commitId, blockNumber } = await commitOp(user, escrowAddress, offer, userOpHash);
+    const cancelRcpt = await cancel(user, escrowAddress, commitId);
+    const claimed = await claimPayout(user, escrowAddress, cancelRcpt.blockNumber);
+    expect(claimed).to.equal(ONE_GWEI);
+    expect(BigInt(await escrow.pendingWithdrawals(user.address))).to.equal(0n);
+    expect(cancelRcpt.blockNumber).to.be.greaterThanOrEqual(blockNumber);
+  });
+
+  it("totalCommitValue equals feePerOp + protocolFeeWei (zero fee)", async () => {
+    const { escrowAddress, offer, escrow } = await deployEscrow();
+    const got = await totalCommitValue(ethers.provider, escrowAddress, offer);
+    const protocolFee = BigInt(await escrow.protocolFeeWei());
+    expect(got).to.equal(offer.feePerOp + protocolFee);
+    expect(got).to.equal(offer.feePerOp);
+  });
+
+  it("totalCommitValue tracks setProtocolFeeWei changes (no caching)", async () => {
+    const [owner] = await ethers.getSigners();
+    const { escrowAddress, escrow, offer } = await deployEscrow();
+    const newFee = ethers.parseUnits("123", "gwei");
+    await escrow.connect(owner).setProtocolFeeWei(newFee);
+    const got = await totalCommitValue(ethers.provider, escrowAddress, offer);
+    expect(got).to.equal(offer.feePerOp + newFee);
   });
 });

@@ -1,5 +1,13 @@
 # @surelock-labs/router
 
+## 0.1.6
+
+- Added `totalCommitValue(provider, escrow, offer)` -- returns `offer.feePerOp + protocolFeeWei()` read live. Matches the `totalCommitValue` term in `docs/DESIGN.md`.
+- `claimPayout(signer, escrow, fromBlock?)` accepts an optional `fromBlock`. When set, the `pendingWithdrawals` pre-check is pinned to that block -- prevents a false zero on load-balanced RPCs immediately after a `cancel` or `claimRefund`.
+- Re-exports from `@surelock-labs/protocol`: `ENTRY_POINT_V06`, `computeUserOpHash`, `UserOperation`, `readEscrowConstants`, `readRegistryConstants`, `EscrowConstants`, `RegistryConstants` -- a client can import everything it needs from `@surelock-labs/router` without adding `@surelock-labs/protocol` or `@surelock-labs/bundler` as direct deps.
+- `scoring.ts` no longer hardcodes `SETTLEMENT_GRACE_BLOCKS`; each `scoreBundler` / `scoreBundlers` call reads the value from the escrow contract once per invocation.
+- Bumped protocol pin to `^0.1.10`.
+
 ## 0.1.5
 
 - `fetchQuotes` now pages via `QuoteRegistry.listActivePage(offset, limit)` instead of `list()`. Bounded response size per RPC; safe on registries with thousands of offers. Takes an optional `pageSize` argument (default 200).

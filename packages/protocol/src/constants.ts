@@ -1,5 +1,5 @@
 import { ethers } from "ethers";
-import { REGISTRY_ABI, ESCROW_ABI } from "@surelock-labs/protocol";
+import { REGISTRY_ABI, ESCROW_ABI } from "./abis";
 
 export interface EscrowConstants {
   version:               string;

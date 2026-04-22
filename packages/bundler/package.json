@@ -1,6 +1,6 @@
 {
   "name": "@surelock-labs/bundler",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "SDK for bundler operators to register SLA offers, accept commits, settle with MPT proofs, and earn fees via the SureLock protocol",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -39,7 +39,7 @@
   "dependencies": {
     "@ethereumjs/rlp": "^5.0.2",
     "@ethereumjs/trie": "^6.2.1",
-    "@surelock-labs/protocol": "^0.1.9"
+    "@surelock-labs/protocol": "^0.1.10"
   },
   "peerDependencies": {
     "ethers": "^6.0.0"

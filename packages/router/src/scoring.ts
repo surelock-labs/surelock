@@ -24,9 +24,6 @@ import { ESCROW_ABI } from "./abis";
 /** Default lookback: ~2.8h on Base at ~2s/block. */
 export const DEFAULT_LOOKBACK_BLOCKS = 5_000;
 
-// Mirror of SLAEscrow constant -- must stay in sync with the contract.
-const SETTLEMENT_GRACE_BLOCKS = 10n;
-
 export interface BundlerScore {
   bundler: string;
   /** Bundler-level headroom heuristic: idleBalance / max(collateralWei across scored offers),
@@ -71,6 +68,7 @@ function computeBundlerScore(
   accepted: ethers.EventLog[],  // CommitAccepted events for this bundler
   settledIds: Set<string>,       // all Settled commitIds in the window
   currentBlock: bigint,
+  settlementGraceBlocks: bigint,
 ): BundlerScore {
   const idleRatio =
     collateral > 0n ? Math.min(1, Number((idle * 100n) / collateral) / 100) : 0;
@@ -91,7 +89,7 @@ function computeBundlerScore(
 
   // Matured accepted: settle window has definitively closed.
   const maturedAccepted = accepted.filter(
-    (e) => currentBlock > BigInt(e.args.deadline) + SETTLEMENT_GRACE_BLOCKS,
+    (e) => currentBlock > BigInt(e.args.deadline) + settlementGraceBlocks,
   );
 
   // settleRate: of matured accepted, how many were settled?
@@ -157,13 +155,11 @@ export async function scoreBundler(
   const currentBlock = BigInt(tip);
   const bundlerLc = bundler.toLowerCase();
 
-  const [idle, allCreated, accepted, allSettled] = await Promise.all([
+  const [idle, settlementGraceBlocks, allCreated, accepted, allSettled] = await Promise.all([
     escrow.idleBalance(bundler).then(BigInt),
-    // CommitCreated.bundler is not indexed; fetch all and filter in JS.
+    escrow.SETTLEMENT_GRACE_BLOCKS().then(BigInt),
     escrow.queryFilter(escrow.filters.CommitCreated(), from, tip) as Promise<ethers.EventLog[]>,
-    // CommitAccepted.bundler is indexed -- use it.
     escrow.queryFilter(escrow.filters.CommitAccepted(null, bundler), from, tip) as Promise<ethers.EventLog[]>,
-    // Settled is not indexed by bundler; cross-reference by commitId.
     escrow.queryFilter(escrow.filters.Settled(), from, tip) as Promise<ethers.EventLog[]>,
   ]);
 
@@ -172,7 +168,7 @@ export async function scoreBundler(
   );
   const settledIds = new Set(allSettled.map((e) => e.args.commitId.toString()));
 
-  return computeBundlerScore(bundler, collateral, idle, created, accepted, settledIds, currentBlock);
+  return computeBundlerScore(bundler, collateral, idle, created, accepted, settledIds, currentBlock, settlementGraceBlocks);
 }
 
 /**
@@ -206,8 +202,8 @@ export async function scoreBundlers(
     if (o.collateralWei > prev) maxCollateral.set(k, o.collateralWei);
   }
 
-  // Fetch all three log types once for the full window.
-  const [allCreated, allAccepted, allSettled] = await Promise.all([
+  const [settlementGraceBlocks, allCreated, allAccepted, allSettled] = await Promise.all([
+    escrow.SETTLEMENT_GRACE_BLOCKS().then(BigInt),
     escrow.queryFilter(escrow.filters.CommitCreated(), from, tip) as Promise<ethers.EventLog[]>,
     escrow.queryFilter(escrow.filters.CommitAccepted(), from, tip) as Promise<ethers.EventLog[]>,
     escrow.queryFilter(escrow.filters.Settled(), from, tip) as Promise<ethers.EventLog[]>,
@@ -215,7 +211,6 @@ export async function scoreBundlers(
 
   const settledIds = new Set(allSettled.map((e) => e.args.commitId.toString()));
 
-  // Score each bundler: filter shared logs in memory + one view call per bundler.
   const scores = await Promise.all(
     [...maxCollateral.entries()].map(async ([addr, col]) => {
       const idle = BigInt(await escrow.idleBalance(addr));
@@ -225,7 +220,7 @@ export async function scoreBundlers(
       const accepted = allAccepted.filter(
         (e) => (e.args.bundler as string).toLowerCase() === addr,
       );
-      return computeBundlerScore(addr, col, idle, created, accepted, settledIds, currentBlock);
+      return computeBundlerScore(addr, col, idle, created, accepted, settledIds, currentBlock, settlementGraceBlocks);
     }),
   );
 

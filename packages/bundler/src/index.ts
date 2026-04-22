@@ -24,8 +24,6 @@ export {
 
 export type { RegisterOfferParams, PendingCommit, AcceptedCommit, CommitInfo, BundlerConfig } from "./types";
 
-export { readEscrowConstants, readRegistryConstants } from "./constants";
-export type { EscrowConstants, RegistryConstants } from "./constants";
 export type { AcceptValidation, AcceptChecks } from "./bundler";
 
 export {
@@ -54,13 +52,23 @@ export {
   buildBlockHeaderRlp,
   buildReceiptProof,
   buildSettleProof,
-  computeUserOpHash,
   findUserOpLogIndex,
   withRetry,
-  ENTRY_POINT_V06,
 } from "./proof";
 
-export type { RpcProvider, ReceiptProof, SettleProof, UserOperation } from "./proof";
+export type { RpcProvider, ReceiptProof, SettleProof } from "./proof";
 
-export { DEPLOYMENTS } from "@surelock-labs/protocol";
-export type { Deployment, Offer } from "@surelock-labs/protocol";
+export {
+  DEPLOYMENTS,
+  ENTRY_POINT_V06,
+  computeUserOpHash,
+  readEscrowConstants,
+  readRegistryConstants,
+} from "@surelock-labs/protocol";
+export type {
+  Deployment,
+  Offer,
+  UserOperation,
+  EscrowConstants,
+  RegistryConstants,
+} from "@surelock-labs/protocol";

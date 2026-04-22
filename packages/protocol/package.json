@@ -1,6 +1,6 @@
 {
   "name": "@surelock-labs/protocol",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "ABIs, addresses, and shared types for the SureLock on-chain SLA protocol",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -38,7 +38,11 @@
     "type": "git",
     "url": "git+https://github.com/surelock-labs/surelock.git"
   },
+  "peerDependencies": {
+    "ethers": "^6.0.0"
+  },
   "devDependencies": {
+    "ethers": "^6.0.0",
     "typescript": "^5.4.0"
   }
 }

@@ -118,9 +118,14 @@ export async function claimRefund(
 export async function claimPayout(
   signer: ethers.Signer,
   escrowAddress: string,
+  fromBlock?: ethers.BlockTag,
 ): Promise<bigint> {
   const escrow = new ethers.Contract(escrowAddress, ESCROW_ABI, signer);
-  const pending = BigInt(await escrow.pendingWithdrawals(await signer.getAddress()));
+  const addr = await signer.getAddress();
+  const readPending = fromBlock !== undefined
+    ? () => escrow.pendingWithdrawals(addr, { blockTag: fromBlock })
+    : () => escrow.pendingWithdrawals(addr);
+  const pending = BigInt(await readPending());
   if (pending === 0n) return 0n;
   const tx = await escrow.claimPayout();
   const receipt = await tx.wait();
@@ -131,6 +136,16 @@ export async function claimPayout(
     } catch {}
   }
   return pending;
+}
+
+export async function totalCommitValue(
+  provider: ethers.Provider,
+  escrowAddress: string,
+  offer: Offer,
+): Promise<bigint> {
+  const escrow = new ethers.Contract(escrowAddress, ESCROW_ABI, provider);
+  const protocolFee: bigint = await escrow.protocolFeeWei();
+  return offer.feePerOp + protocolFee;
 }
 
 /**

@@ -1,6 +1,6 @@
 {
   "name": "@surelock-labs/router",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Client SDK for SureLock: select bundlers by SLA reputation, commit UserOps with collateral-backed enforcement, and recover fees on misses",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -37,7 +37,7 @@
     "url": "git+https://github.com/surelock-labs/surelock.git"
   },
   "dependencies": {
-    "@surelock-labs/protocol": "^0.1.9"
+    "@surelock-labs/protocol": "^0.1.10"
   },
   "peerDependencies": {
     "ethers": "^6.0.0"
