@@ -344,6 +344,66 @@ describe("reliability scoring", () => {
       expect(warns).to.have.length(0);
     });
 
+    it("queryFilter is chunked to 9000-block ranges covering the full window", async () => {
+      const { escrowAddress, offers } = await loadFixture(deployScoringEscrow);
+      const { mine } = await import("@nomicfoundation/hardhat-network-helpers");
+      const { scoreBundler } = await import("../packages/router/src/scoring");
+      const LOOKBACK = 20_000;
+      await mine(LOOKBACK + 100);
+      const tip = await ethers.provider.getBlockNumber();
+      const from = tip - LOOKBACK;
+      const expectedRanges: Array<[number, number]> = [
+        [from,            from + 8_999 ],
+        [from + 9_000,    from + 17_999],
+        [from + 18_000,   tip          ],
+      ];
+
+      const calls: Array<[number, number]> = [];
+      const proto = (ethers as any).BaseContract?.prototype ?? (ethers as any).Contract.prototype;
+      const origQF = proto.queryFilter;
+      proto.queryFilter = async function(filter: any, f: any, t: any) {
+        if (typeof f === "number" && typeof t === "number") calls.push([f, t]);
+        return origQF.call(this, filter, f, t);
+      };
+      try {
+        await scoreBundler(ethers.provider, escrowAddress, offers[0].bundler, COLLATERAL, LOOKBACK);
+        expect(calls, "3 filters x 3 chunks = 9 calls").to.have.length(9);
+        for (const exp of expectedRanges) {
+          const matches = calls.filter(c => c[0] === exp[0] && c[1] === exp[1]);
+          expect(matches, `range ${exp[0]}-${exp[1]} must appear once per filter`).to.have.length(3);
+        }
+      } finally {
+        proto.queryFilter = origQF;
+      }
+    });
+
+    it("queryFilter concurrency is capped at 4 in-flight per call", async () => {
+      const { escrowAddress, offers } = await loadFixture(deployScoringEscrow);
+      const { mine } = await import("@nomicfoundation/hardhat-network-helpers");
+      const { scoreBundler } = await import("../packages/router/src/scoring");
+      await mine(100_000);
+
+      let inFlight = 0;
+      let peak = 0;
+      const proto = (ethers as any).BaseContract?.prototype ?? (ethers as any).Contract.prototype;
+      const origQF = proto.queryFilter;
+      proto.queryFilter = async function(filter: any, f: any, t: any) {
+        inFlight++;
+        peak = Math.max(peak, inFlight);
+        try {
+          return await origQF.call(this, filter, f, t);
+        } finally {
+          inFlight--;
+        }
+      };
+      try {
+        await scoreBundler(ethers.provider, escrowAddress, offers[0].bundler, COLLATERAL, 100_000);
+        expect(peak, "max in-flight queryFilter calls must respect the concurrency cap").to.be.at.most(4 * 3);
+      } finally {
+        proto.queryFilter = origQF;
+      }
+    });
+
     it("transient getCode failure rejects scoreBundlers and emits no fallback warn", async () => {
       const { escrowAddress, offers } = await loadFixture(deployScoringEscrow);
       const { MULTICALL3 } = await import("@surelock-labs/protocol");
