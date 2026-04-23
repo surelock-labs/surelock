@@ -170,8 +170,9 @@ async function main() {
     console.log(`\nAddresses written -> deployments/${chainId}.json`);
 
     if (isLive) {
-        console.log("\nNext step -- verify on Basescan:");
+        console.log("\nNext step -- verify on Sourcify (no API key required):");
         console.log(`  npm run verify -- --network ${network.name}`);
+        console.log("For Basescan verification, run hardhat verify:etherscan separately with BASESCAN_API_KEY set.");
     }
 }
 

@@ -16,7 +16,8 @@
     "compile": "hardhat compile",
     "test": "hardhat test",
     "play": "hardhat play",
-    "node": "hardhat node"
+    "node": "hardhat node",
+    "verify": "hardhat run scripts/verify.ts"
   },
   "devDependencies": {
     "@ethereumjs/trie": "^6.2.1",
