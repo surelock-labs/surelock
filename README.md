@@ -1,4 +1,6 @@
-# SureLock
+<p align="center">
+  <img src="docs/banner.png" alt="SureLock -- On-chain SLA enforcement" width="640">
+</p>
 
 [![@surelock-labs/protocol](https://img.shields.io/npm/v/@surelock-labs/protocol?label=%40surelock-labs%2Fprotocol)](https://www.npmjs.com/package/@surelock-labs/protocol)
 [![@surelock-labs/router](https://img.shields.io/npm/v/@surelock-labs/router?label=%40surelock-labs%2Frouter)](https://www.npmjs.com/package/@surelock-labs/router)
