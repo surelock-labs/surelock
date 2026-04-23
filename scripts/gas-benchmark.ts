@@ -117,9 +117,11 @@ async function main() {
     // Separate nonce counters -- signer (user) and bundler are different addresses.
     let userNonce    = await ethers.provider.getTransactionCount(signer.address,  "latest");
     let bundlerNonce = await ethers.provider.getTransactionCount(bundler.address, "latest");
+    // Base Sepolia can under-estimate low-cost calls; receipts still report exact gasUsed.
     const GAS = {
         maxFeePerGas:         ethers.parseUnits("2", "gwei"),
         maxPriorityFeePerGas: ethers.parseUnits("1", "gwei"),
+        gasLimit:             300_000n,
     };
     const UTX = (extra: Record<string, any> = {}) => ({ nonce: userNonce++,    ...GAS, ...extra });
     const BTX = (extra: Record<string, any> = {}) => ({ nonce: bundlerNonce++, ...GAS, ...extra });

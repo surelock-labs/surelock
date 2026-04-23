@@ -22,31 +22,40 @@ Existing routers work around failures after the fact. None enforce delivery comm
 
 ## How it works
 
-```
-BUNDLER                          CLIENT
-  |                                |
-  +-- register(offer)              |    QuoteRegistry
-  |   feePerOp, slaBlocks,         |    collateral > feePerOp enforced
-  |   collateralWei, lifetime      |
-  +-- deposit(collateral)          |    SLAEscrow
-  |                                |
-  |                                +-- commit(quoteId, userOpHash, ...)
-  |                                |   value = feePerOp + protocolFee
-  |                                |   -> PROPOSED (no collateral locked yet)
-  |
-  +-- accept(commitId)             |   collateral locked, SLA clock starts
-  |                                |   -> ACTIVE
-  |
-  +-- include UserOp  -----------> EntryPoint
-  |
-  +-- settle(commitId, proof)      |   MPT receipt proof verified on-chain
-  |   earns full feePerOp          |   -> SETTLED
-  |
-  |   (if SLA window + grace expires without settle)
-  |                                |
-  |                                +-- claimRefund(commitId)
-  |                                    gets feePerOp + full collateral back
-  |                                    -> REFUNDED (bundler slashed)
+```mermaid
+sequenceDiagram
+    participant Bundler
+    participant Client
+    participant Registry as QuoteRegistry
+    participant Escrow as SLAEscrow
+    participant EntryPoint
+
+    Bundler->>Registry: register(offer)
+    Note right of Registry: feePerOp, slaBlocks, collateralWei must exceed feePerOp
+    Bundler->>Escrow: deposit(collateral)
+
+    Client->>Registry: read active offers
+    Client->>Escrow: read history and idle collateral
+    Note over Client: selectReliable() picks offer with idleBalance >= collateralWei
+
+    Client->>Escrow: commitOp(selected offer, userOpHash)
+    Note right of Escrow: Client pays feePerOp + protocolFee
+    Escrow-->>Client: PROPOSED
+    Note over Client,Escrow: fee held, collateral not locked
+
+    Escrow-->>Bundler: CommitCreated event
+    Bundler->>Escrow: accept(commitId)
+    Escrow-->>Bundler: ACTIVE
+    Note over Bundler,Escrow: collateral locked, deadline = acceptBlock + slaBlocks
+
+    alt settled in time
+        Bundler->>EntryPoint: include UserOp
+        Bundler->>Escrow: settle(commitId, proof)
+        Escrow-->>Bundler: SETTLED, feePerOp paid
+    else SLA miss
+        Client->>Escrow: claimRefund(commitId)
+        Escrow-->>Client: REFUNDED, feePerOp + collateral
+    end
 ```
 
 ### Settlement proof
@@ -145,7 +154,7 @@ client.watchCommits(signer.address, async (commit) => {
 | QuoteRegistry | [`0x8D15232a45903602411EF1494a10201Ad3d4EA47`](https://sepolia.basescan.org/address/0x8D15232a45903602411EF1494a10201Ad3d4EA47#code) |
 | SLAEscrow (proxy) | [`0x508eB40826ce7042dB14242f278Bb4a9AbB0D82A`](https://sepolia.basescan.org/address/0x508eB40826ce7042dB14242f278Bb4a9AbB0D82A#code) |
 | SLAEscrow (impl) | [`0xe3a465972E8ab8f258d1718F48e2933d0B2117A5`](https://sepolia.basescan.org/address/0xe3a465972E8ab8f258d1718F48e2933d0B2117A5#code) |
-| TimelockController (1h testnet) | `0xd9Fa5FeA0B26ecA0e3B19a0A5FDaec8BaB76A4Ba` |
+| TimelockController (1h testnet) | [`0xd9Fa5FeA0B26ecA0e3B19a0A5FDaec8BaB76A4Ba`](https://sepolia.basescan.org/address/0xd9Fa5FeA0B26ecA0e3B19a0A5FDaec8BaB76A4Ba#code) |
 
 Both contracts verified on Sourcify. SLAEscrow is a UUPS proxy behind a TimelockController (1h on testnet, 48h on mainnet).
 
@@ -157,20 +166,22 @@ Not yet deployed.
 
 ---
 
-## Gas (Base Sepolia, measured 2026-04-15)
+## Gas (Base Sepolia, measured 2026-04-23)
 
 | Operation | Gas units | Notes |
 |---|---|---|
-| `commit()` | 197,563 | Hot path -- client commits UserOp |
-| `accept()` | 68,569 | Bundler accepts, locks collateral |
+| `commit()` | 202,383 | Hot path -- client commits UserOp |
+| `accept()` | 85,676 | Bundler accepts, locks collateral |
 | `settle()` | ~175-200k | Includes MPT proof verification |
-| `claimRefund()` | 58,608 | SLA miss -- client recovers fee + collateral |
-| `cancel()` | 62,571 | Unaccepted commit after accept window |
-| `claimPayout()` | 40,798 | Withdraw pending balance |
-| `deposit()` | 38,504 | Bundler deposits collateral |
-| `withdraw()` | 47,453 | Bundler withdraws idle collateral |
-| `register()` | 103,648 | Register bundler offer |
-| `renew()` | 28,206 | Renew offer before expiry |
+| `claimRefund()` | 76,186 | SLA miss -- client recovers fee + collateral |
+| `cancel()` | 84,905 | Unaccepted commit after accept window |
+| `claimPayout()` | 41,427 | Withdraw pending balance |
+| `deposit()` | 72,836 | Bundler deposits collateral |
+| `withdraw()` | 38,384 | Bundler withdraws idle collateral |
+| `register()` | 120,770 | Register bundler offer |
+| `renew()` | 31,028 | Renew offer before expiry |
+| `deregister()` | 55,223 | Deactivate offer, move bond to pending |
+| `claimBond()` | 36,442 | Pull pending registry bond |
 
 ---
 
@@ -183,7 +194,7 @@ Not yet deployed.
 | `REFUND_GRACE_BLOCKS` | 5 | ~10s dead zone prevents settle/refund race |
 | `MAX_SLA_BLOCKS` | 1,000 | ~33 min -- max SLA window an offer may specify |
 | `MAX_PROTOCOL_FEE_WEI` | 0.001 ETH | Fee ceiling; starts at 0 (inactive at launch) |
-| `MIN_BOND` | 0.0001 ETH | Minimum bundler registration bond |
+| `MIN_BOND` | 0.0001 ETH | Lower bound for the configurable registration bond |
 
 ---
 
@@ -212,14 +223,14 @@ Not yet deployed.
 
 ### Static analysis
 
-- **Slither** -- 0 high/medium findings (2026-04-15 baseline). Reports in [`audit/reports/`](audit/reports/).
-- **Aderyn** -- 0 high findings (2026-04-15).
+- **Slither** -- 0 high/medium findings in the current baseline.
+- **Aderyn** -- 0 high findings in the current baseline.
 
 ### Test suite
 
-1,863 Hardhat adversarial tests across 18 attack categories:
+Current source includes 1,900 Hardhat test cases, including 1,441 adversarial cases across 19 category files:
 
-fund theft . collateral manipulation . fee bypass . state machine attacks . timing attacks . registry attacks . reentrancy . ETH accounting . integer arithmetic . multi-party attacks . proxy attacks . timelock attacks . access control . commit lifecycle . economic griefing . proxy integrity . audit fixes . two-phase attacks
+fund theft . collateral manipulation . fee bypass . state machine attacks . timing attacks . registry attacks . reentrancy . ETH accounting . integer arithmetic . multi-party attacks . proxy attacks . timelock attacks . access control . commit lifecycle . economic griefing . proxy integrity . audit fixes . two-phase attacks . exact invariants
 
 Plus 41 Foundry tests (31 `testProp_*` + 10 `invariant_*`).
 
@@ -281,7 +292,7 @@ await w.print.state()
 
 ```
 contracts/          Solidity source (SLAEscrow, QuoteRegistry, Timelock, MerkleTrie)
-test/               1700+ Hardhat adversarial tests + Foundry invariants
+test/               Hardhat tests + Foundry invariants
 certora/            Certora Prover specs and configuration
 audit/              Slither, Aderyn, Kontrol tooling (Dockerfile + scripts)
 docs/
