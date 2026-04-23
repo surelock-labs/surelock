@@ -305,6 +305,67 @@ describe("reliability scoring", () => {
     expect(scored.find(({ offer }) => offer.bundler.toLowerCase() === bundlerA.address.toLowerCase())!.score.idleBalance)
       .to.equal(COLLATERAL);
   });
+
+  describe("Multicall3 fallback warn-once semantics", () => {
+    let warns: any[][];
+    let origWarn: typeof console.warn;
+    let scoreBundlersSrc: typeof import("../packages/router/src/scoring").scoreBundlers;
+
+    beforeEach(async () => {
+      const scoring = await import("../packages/router/src/scoring");
+      scoring._resetMulticallAbsentWarned();
+      scoreBundlersSrc = scoring.scoreBundlers;
+      warns = [];
+      origWarn = console.warn;
+      console.warn = (...args: any[]) => { warns.push(args); };
+    });
+
+    afterEach(() => { console.warn = origWarn; });
+
+    it("auto fallback emits exactly one console.warn the first time", async () => {
+      const { escrowAddress, offers } = await loadFixture(deployScoringEscrow);
+      await scoreBundlersSrc(ethers.provider, escrowAddress, offers, 100);
+      expect(warns).to.have.length(1);
+      expect(String(warns[0][0])).to.match(/Multicall3 not deployed/);
+    });
+
+    it("second auto-fallback call in the same process stays silent (warn-once)", async () => {
+      const { escrowAddress, offers } = await loadFixture(deployScoringEscrow);
+      await scoreBundlersSrc(ethers.provider, escrowAddress, offers, 100);
+      await scoreBundlersSrc(ethers.provider, escrowAddress, offers, 100);
+      await scoreBundlersSrc(ethers.provider, escrowAddress, offers, 100);
+      expect(warns).to.have.length(1);
+    });
+
+    it("explicit { multicall: false } never warns", async () => {
+      const { escrowAddress, offers } = await loadFixture(deployScoringEscrow);
+      await scoreBundlersSrc(ethers.provider, escrowAddress, offers, 100, { multicall: false });
+      await scoreBundlersSrc(ethers.provider, escrowAddress, offers, 100, { multicall: false });
+      expect(warns).to.have.length(0);
+    });
+
+    it("transient getCode failure rejects scoreBundlers and emits no fallback warn", async () => {
+      const { escrowAddress, offers } = await loadFixture(deployScoringEscrow);
+      const { MULTICALL3 } = await import("@surelock-labs/protocol");
+      const origGetCode = ethers.provider.getCode.bind(ethers.provider);
+      (ethers.provider as any).getCode = async (addr: string) => {
+        if (addr.toLowerCase() === MULTICALL3.toLowerCase()) {
+          throw new Error("simulated RPC outage");
+        }
+        return origGetCode(addr);
+      };
+      try {
+        let thrown: unknown = null;
+        try { await scoreBundlersSrc(ethers.provider, escrowAddress, offers, 100); }
+        catch (e) { thrown = e; }
+        expect(thrown, "scoreBundlers must reject on getCode failure").to.not.be.null;
+        expect(String((thrown as Error).message)).to.match(/simulated RPC outage/);
+        expect(warns, "no fallback warn should fire for a transient error").to.have.length(0);
+      } finally {
+        (ethers.provider as any).getCode = origGetCode;
+      }
+    });
+  });
 });
 
 // -- cancel / claimRefund / claimPayout (router SDK) ---------------------------
