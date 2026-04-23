@@ -19,8 +19,24 @@
  */
 
 import { ethers } from "ethers";
-import { aggregate3 } from "@surelock-labs/protocol";
+import { MULTICALL3, aggregate3 } from "@surelock-labs/protocol";
 import { ESCROW_ABI } from "./abis";
+
+let multicallAbsentWarned = false;
+
+async function multicallAvailable(provider: ethers.Provider): Promise<boolean> {
+  try {
+    const code = await provider.getCode(MULTICALL3);
+    return code !== "0x";
+  } catch {
+    return false;
+  }
+}
+
+/** @internal -- test-only: reset the warn-once flag for isolated tests. */
+export function _resetMulticallAbsentWarned(): void {
+  multicallAbsentWarned = false;
+}
 
 /** Default lookback: ~2.8h on Base at ~2s/block. */
 export const DEFAULT_LOOKBACK_BLOCKS = 5_000;
@@ -213,17 +229,21 @@ export async function scoreBundlers(
   const settledIds = new Set(allSettled.map((e) => e.args.commitId.toString()));
   const addrs = [...maxCollateral.keys()];
 
-  let idles: bigint[];
-  if (opts.multicall !== false) {
-    try {
-      const abi = ethers.AbiCoder.defaultAbiCoder();
-      const returnData = await aggregate3(provider,
-        addrs.map(a => ({ target: escrowAddr, callData: escrow.interface.encodeFunctionData("idleBalance", [a]) })));
-      idles = returnData.map(d => BigInt(abi.decode(["uint256"], d)[0] as bigint));
-    } catch (err: any) {
-      console.warn(`scoreBundlers: Multicall3 unavailable (${err?.shortMessage ?? err?.message ?? err}); falling back to ${addrs.length} direct idleBalance reads. Pass { multicall: false } to silence.`);
-      idles = await Promise.all(addrs.map(a => escrow.idleBalance(a).then(BigInt)));
+  let useMulticall = opts.multicall !== false;
+  if (useMulticall && !(await multicallAvailable(provider))) {
+    if (!multicallAbsentWarned) {
+      console.warn("scoreBundlers: Multicall3 not deployed at 0xcA11bde0... on this chain; falling back to direct idleBalance reads. Pass { multicall: false } to silence.");
+      multicallAbsentWarned = true;
     }
+    useMulticall = false;
+  }
+
+  let idles: bigint[];
+  if (useMulticall) {
+    const abi = ethers.AbiCoder.defaultAbiCoder();
+    const returnData = await aggregate3(provider,
+      addrs.map(a => ({ target: escrowAddr, callData: escrow.interface.encodeFunctionData("idleBalance", [a]) })));
+    idles = returnData.map(d => BigInt(abi.decode(["uint256"], d)[0] as bigint));
   } else {
     idles = await Promise.all(addrs.map(a => escrow.idleBalance(a).then(BigInt)));
   }

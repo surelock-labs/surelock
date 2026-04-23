@@ -305,6 +305,45 @@ describe("reliability scoring", () => {
     expect(scored.find(({ offer }) => offer.bundler.toLowerCase() === bundlerA.address.toLowerCase())!.score.idleBalance)
       .to.equal(COLLATERAL);
   });
+
+  describe("Multicall3 fallback warn-once semantics", () => {
+    let warns: any[][];
+    let origWarn: typeof console.warn;
+    let scoreBundlersSrc: typeof import("../packages/router/src/scoring").scoreBundlers;
+
+    beforeEach(async () => {
+      const scoring = await import("../packages/router/src/scoring");
+      scoring._resetMulticallAbsentWarned();
+      scoreBundlersSrc = scoring.scoreBundlers;
+      warns = [];
+      origWarn = console.warn;
+      console.warn = (...args: any[]) => { warns.push(args); };
+    });
+
+    afterEach(() => { console.warn = origWarn; });
+
+    it("auto fallback emits exactly one console.warn the first time", async () => {
+      const { escrowAddress, offers } = await loadFixture(deployScoringEscrow);
+      await scoreBundlersSrc(ethers.provider, escrowAddress, offers, 100);
+      expect(warns).to.have.length(1);
+      expect(String(warns[0][0])).to.match(/Multicall3 not deployed/);
+    });
+
+    it("second auto-fallback call in the same process stays silent (warn-once)", async () => {
+      const { escrowAddress, offers } = await loadFixture(deployScoringEscrow);
+      await scoreBundlersSrc(ethers.provider, escrowAddress, offers, 100);
+      await scoreBundlersSrc(ethers.provider, escrowAddress, offers, 100);
+      await scoreBundlersSrc(ethers.provider, escrowAddress, offers, 100);
+      expect(warns).to.have.length(1);
+    });
+
+    it("explicit { multicall: false } never warns", async () => {
+      const { escrowAddress, offers } = await loadFixture(deployScoringEscrow);
+      await scoreBundlersSrc(ethers.provider, escrowAddress, offers, 100, { multicall: false });
+      await scoreBundlersSrc(ethers.provider, escrowAddress, offers, 100, { multicall: false });
+      expect(warns).to.have.length(0);
+    });
+  });
 });
 
 // -- cancel / claimRefund / claimPayout (router SDK) ---------------------------
