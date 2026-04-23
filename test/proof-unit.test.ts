@@ -5,6 +5,7 @@ import { expect } from "chai";
 import {
   buildBlockHeaderRlp,
   buildReceiptProof,
+  fetchBlockReceipts,
   withRetry,
   findUserOpLogIndex,
 } from "../packages/bundler/src/proof";
@@ -115,6 +116,119 @@ describe("withRetry", () => {
     const result = await withRetry(fn, 3, 0);
     expect(result).to.equal("nested-ok");
     expect(calls).to.equal(2);
+  });
+});
+
+// -- fetchBlockReceipts --------------------------------------------------------
+
+describe("fetchBlockReceipts", () => {
+  function makeTxs(n: number) {
+    return Array.from({ length: n }, (_, i) => ({
+      hash: "0x" + i.toString(16).padStart(64, "0"),
+    }));
+  }
+
+  it("uses eth_getBlockReceipts fast-path when available (one RPC, same length)", async () => {
+    const txs = makeTxs(50);
+    let getBlockReceiptsCalls = 0;
+    let perTxCalls = 0;
+    const rpc = {
+      send: async (method: string, _params: unknown[]) => {
+        if (method === "eth_getBlockReceipts") {
+          getBlockReceiptsCalls++;
+          return txs.map((_, i) => ({ transactionHash: txs[i].hash, status: "0x1" }));
+        }
+        if (method === "eth_getTransactionReceipt") { perTxCalls++; return { status: "0x1" }; }
+        throw new Error("unexpected method: " + method);
+      },
+    };
+    const got = await fetchBlockReceipts(rpc, "0x10", txs);
+    expect(got).to.have.length(50);
+    expect(getBlockReceiptsCalls).to.equal(1);
+    expect(perTxCalls).to.equal(0);
+    expect(got[0].transactionHash).to.equal(txs[0].hash);
+    expect(got[49].transactionHash).to.equal(txs[49].hash);
+  });
+
+  it("falls back to eth_getTransactionReceipt when getBlockReceipts throws", async () => {
+    const txs = makeTxs(5);
+    let perTxCalls = 0;
+    const rpc = {
+      send: async (method: string, params: unknown[]) => {
+        if (method === "eth_getBlockReceipts") throw new Error("method not found");
+        if (method === "eth_getTransactionReceipt") {
+          perTxCalls++;
+          return { transactionHash: (params as string[])[0], status: "0x1" };
+        }
+        throw new Error("unexpected method: " + method);
+      },
+    };
+    const got = await fetchBlockReceipts(rpc, "0x10", txs);
+    expect(perTxCalls).to.equal(5);
+    for (let i = 0; i < 5; i++) expect(got[i].transactionHash).to.equal(txs[i].hash);
+  });
+
+  it("falls back when getBlockReceipts returns a length mismatch (partial response)", async () => {
+    const txs = makeTxs(10);
+    let perTxCalls = 0;
+    const rpc = {
+      send: async (method: string, params: unknown[]) => {
+        if (method === "eth_getBlockReceipts") return [{ status: "0x1" }];
+        perTxCalls++;
+        return { transactionHash: (params as string[])[0], status: "0x1" };
+      },
+    };
+    const got = await fetchBlockReceipts(rpc, "0x10", txs);
+    expect(got).to.have.length(10);
+    expect(perTxCalls).to.equal(10);
+  });
+
+  it("bounds concurrent in-flight calls to at most 8 in the fallback path", async () => {
+    const N = 40;
+    const txs = makeTxs(N);
+    let inFlight = 0;
+    let peak = 0;
+    const rpc = {
+      send: async (method: string, params: unknown[]) => {
+        if (method === "eth_getBlockReceipts") throw new Error("not supported");
+        inFlight++;
+        if (inFlight > peak) peak = inFlight;
+        await new Promise<void>((r) => setImmediate(r));
+        inFlight--;
+        return { transactionHash: (params as string[])[0], status: "0x1" };
+      },
+    };
+    await fetchBlockReceipts(rpc, "0x10", txs);
+    expect(peak).to.be.at.most(8);
+    expect(peak).to.be.at.least(1);
+  });
+
+  it("preserves tx order in the fallback path", async () => {
+    const N = 20;
+    const txs = makeTxs(N);
+    const rpc = {
+      send: async (method: string, params: unknown[]) => {
+        if (method === "eth_getBlockReceipts") throw new Error("not supported");
+        const delay = (Number(BigInt((params as string[])[0])) % 4) + 1;
+        await new Promise<void>((r) => setTimeout(r, delay));
+        return { transactionHash: (params as string[])[0], index: (params as string[])[0] };
+      },
+    };
+    const got = await fetchBlockReceipts(rpc, "0x10", txs);
+    for (let i = 0; i < N; i++) expect(got[i].transactionHash).to.equal(txs[i].hash);
+  });
+
+  it("returns empty array for a block with zero txs without any RPC calls", async () => {
+    let calls = 0;
+    const rpc = {
+      send: async () => {
+        calls++;
+        return [];
+      },
+    };
+    const got = await fetchBlockReceipts(rpc, "0x10", []);
+    expect(got).to.deep.equal([]);
+    expect(calls).to.equal(1);
   });
 });
 
