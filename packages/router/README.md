@@ -138,6 +138,7 @@ const router = createRouter({
   rpcUrl: "https://sepolia.base.org",
   registryAddress: registry,
   escrowAddress: escrow,  // required for commitOp and selectReliable
+  // multicall: false,     // optional: disable Multicall3 on custom/local chains
 });
 
 // Routability-aware: filters by idleBalance >= offer.collateralWei
@@ -145,7 +146,7 @@ const best = await router.selectReliable();
 const result = await router.commitOp(signer, best!, userOpHash);
 ```
 
-### `fetchAndScoreQuotes(provider, registryAddress, escrowAddress, lookback?)`
+### `fetchAndScoreQuotes(provider, registryAddress, escrowAddress, lookback?, opts?)`
 
 Fetches active offers **and** scores each bundler's on-chain track record. Returns offers sorted best-to-worst by composite score.
 
@@ -159,7 +160,13 @@ const { offer, score } = scored[0]; // highest-reputation bundler
 console.log(`acceptRate:  ${Math.round(score.acceptRate * 100)}%`);
 console.log(`settleRate:  ${Math.round(score.settleRate * 100)}%`);
 console.log(`score: ${score.score}/100`);
+
+// On local/custom chains without Multicall3 at 0xcA11bde0..., opt out explicitly
+// to skip the auto-fallback warn:
+const localScored = await fetchAndScoreQuotes(provider, registry, escrow, undefined, { multicall: false });
 ```
+
+By default, scoring uses Multicall3 for `idleBalance` reads and falls back to direct reads with a `console.warn` when Multicall3 is unavailable.
 
 **Scoring weights:**
 
@@ -342,6 +349,7 @@ interface RouterConfig {
   rpcUrl:            string;
   registryAddress:   string;
   escrowAddress?:    string; // required for commitOp and selectReliable
+  multicall?:        boolean; // default true; selectReliable auto-falls back if unavailable
 }
 
 interface BundlerScore {

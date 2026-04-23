@@ -215,10 +215,15 @@ export async function scoreBundlers(
 
   let idles: bigint[];
   if (opts.multicall !== false) {
-    const abi = ethers.AbiCoder.defaultAbiCoder();
-    const returnData = await aggregate3(provider,
-      addrs.map(a => ({ target: escrowAddr, callData: escrow.interface.encodeFunctionData("idleBalance", [a]) })));
-    idles = returnData.map(d => BigInt(abi.decode(["uint256"], d)[0] as bigint));
+    try {
+      const abi = ethers.AbiCoder.defaultAbiCoder();
+      const returnData = await aggregate3(provider,
+        addrs.map(a => ({ target: escrowAddr, callData: escrow.interface.encodeFunctionData("idleBalance", [a]) })));
+      idles = returnData.map(d => BigInt(abi.decode(["uint256"], d)[0] as bigint));
+    } catch (err: any) {
+      console.warn(`scoreBundlers: Multicall3 unavailable (${err?.shortMessage ?? err?.message ?? err}); falling back to ${addrs.length} direct idleBalance reads. Pass { multicall: false } to silence.`);
+      idles = await Promise.all(addrs.map(a => escrow.idleBalance(a).then(BigInt)));
+    }
   } else {
     idles = await Promise.all(addrs.map(a => escrow.idleBalance(a).then(BigInt)));
   }

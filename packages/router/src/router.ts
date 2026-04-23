@@ -23,6 +23,10 @@ export async function fetchQuotes(
   registryAddress: string,
   pageSize = 200,
 ): Promise<Offer[]> {
+  if (!Number.isSafeInteger(pageSize) || pageSize <= 0) {
+    throw new Error(`pageSize must be a positive safe integer (got ${pageSize})`);
+  }
+
   const contract = new ethers.Contract(registryAddress, REGISTRY_ABI, provider);
   const total = BigInt(await contract.nextQuoteId()); // exclusive upper bound
   if (total <= 1n) return [];
@@ -159,11 +163,12 @@ export async function fetchAndScoreQuotes(
   registryAddress: string,
   escrowAddress: string,
   lookback = DEFAULT_LOOKBACK_BLOCKS,
+  opts: { multicall?: boolean } = {},
 ): Promise<Array<{ offer: Offer; score: BundlerScore }>> {
   const offers = await fetchQuotes(provider, registryAddress);
   if (offers.length === 0) return [];
 
-  const scores = await scoreBundlers(provider, escrowAddress, offers, lookback);
+  const scores = await scoreBundlers(provider, escrowAddress, offers, lookback, opts);
 
   return offers
     .map((offer) => ({
@@ -213,6 +218,7 @@ export function createRouter(config: RouterConfig) {
         config.registryAddress,
         config.escrowAddress,
         lookback,
+        { multicall: config.multicall },
       );
       const candidates = scored.filter(({ offer, score }) => {
         if (!offer.active || offer.collateralWei <= offer.feePerOp) return false;
