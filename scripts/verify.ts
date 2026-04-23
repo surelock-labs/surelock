@@ -1,10 +1,4 @@
-/// Sourcify verification (bytecode match, no API key). Reads deployments/{chainId}.json.
 /// Usage: npm run verify -- --network baseSepolia
-///
-/// Basescan is a separate path -- run hardhat verify:etherscan per contract with
-/// BASESCAN_API_KEY and the contract's constructor args. Registry takes
-/// (owner, initialBond); SLAEscrow impl takes (entryPoint); Timelock takes
-/// (minDelay, proposers, executors, admin); SLAEscrow proxy has no args.
 
 import { run, network, ethers } from "hardhat";
 import { loadDeployment } from "./deployment";
