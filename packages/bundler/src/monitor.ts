@@ -53,13 +53,12 @@ export function checkActiveCommit(
       });
     }
 
-    // Refund window open -- BUNDLER can call claimRefund() to release locked collateral
     if (blocksUntilRefundWindow(commit, currentBlock) === 0n) {
       alerts.push({
         type: "REFUND_WINDOW_OPEN",
         commitId: commit.commitId,
         blocksRemaining: 0n,
-        message: `commit ${commit.commitId}: refund window open -- call claimRefund() to release collateral`,
+        message: `commit ${commit.commitId}: refund window open -- claimRefund() now finalizes the miss and slashes the locked collateral to the user`,
       });
     }
 
