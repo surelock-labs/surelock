@@ -871,7 +871,7 @@ describe("renew", () => {
 describe("readEscrowConstants / readRegistryConstants / ENTRY_POINT_V06", () => {
   it("readEscrowConstants round-trips every field against the contract's own views", async () => {
     const { escrow, escrowAddress } = await loadFixture(deploy);
-    const got = await readEscrowConstants(ethers.provider, escrowAddress);
+    const got = await readEscrowConstants(ethers.provider, escrowAddress, { multicall: false });
 
     expect(got.version).to.equal(await escrow.version());
     expect(got.entryPoint.toLowerCase()).to.equal((await escrow.entryPoint() as string).toLowerCase());
@@ -886,28 +886,28 @@ describe("readEscrowConstants / readRegistryConstants / ENTRY_POINT_V06", () => 
 
   it("readEscrowConstants reflects setProtocolFeeWei mutations live (not cached)", async () => {
     const { escrow, escrowAddress, owner } = await loadFixture(deploy);
-    const before = await readEscrowConstants(ethers.provider, escrowAddress);
+    const before = await readEscrowConstants(ethers.provider, escrowAddress, { multicall: false });
     expect(before.protocolFeeWei).to.equal(0n);
 
     const newFee = ethers.parseUnits("777", "gwei");
     await escrow.connect(owner).setProtocolFeeWei(newFee);
-    const after = await readEscrowConstants(ethers.provider, escrowAddress);
+    const after = await readEscrowConstants(ethers.provider, escrowAddress, { multicall: false });
     expect(after.protocolFeeWei).to.equal(newFee);
   });
 
   it("readEscrowConstants reflects setFeeRecipient mutations live (not cached)", async () => {
     const { escrow, escrowAddress, owner, user } = await loadFixture(deploy);
-    const before = await readEscrowConstants(ethers.provider, escrowAddress);
+    const before = await readEscrowConstants(ethers.provider, escrowAddress, { multicall: false });
 
     await escrow.connect(owner).setFeeRecipient(user.address);
-    const after = await readEscrowConstants(ethers.provider, escrowAddress);
+    const after = await readEscrowConstants(ethers.provider, escrowAddress, { multicall: false });
     expect(after.feeRecipient.toLowerCase()).to.equal(user.address.toLowerCase());
     expect(after.feeRecipient.toLowerCase()).to.not.equal(before.feeRecipient.toLowerCase());
   });
 
   it("readRegistryConstants round-trips every field against the contract's own views", async () => {
     const { registry, registryAddress } = await loadFixture(deploy);
-    const got = await readRegistryConstants(ethers.provider, registryAddress);
+    const got = await readRegistryConstants(ethers.provider, registryAddress, { multicall: false });
 
     expect(got.minBond).to.equal(BigInt(await registry.MIN_BOND()));
     expect(got.maxBond).to.equal(BigInt(await registry.MAX_BOND()));
@@ -917,25 +917,45 @@ describe("readEscrowConstants / readRegistryConstants / ENTRY_POINT_V06", () => 
 
   it("readRegistryConstants reflects setBond mutations live (not cached)", async () => {
     const { registry, registryAddress, owner } = await loadFixture(deploy);
-    const before = await readRegistryConstants(ethers.provider, registryAddress);
+    const before = await readRegistryConstants(ethers.provider, registryAddress, { multicall: false });
 
     const newBond = before.registrationBond * 3n;
     expect(newBond).to.be.lessThanOrEqual(before.maxBond);
     await registry.connect(owner).setBond(newBond);
-    const after = await readRegistryConstants(ethers.provider, registryAddress);
+    const after = await readRegistryConstants(ethers.provider, registryAddress, { multicall: false });
     expect(after.registrationBond).to.equal(newBond);
   });
 
   it("escrow and registry agree on MAX_SLA_BLOCKS", async () => {
     const { escrowAddress, registryAddress } = await loadFixture(deploy);
-    const e = await readEscrowConstants(ethers.provider, escrowAddress);
-    const r = await readRegistryConstants(ethers.provider, registryAddress);
+    const e = await readEscrowConstants(ethers.provider, escrowAddress, { multicall: false });
+    const r = await readRegistryConstants(ethers.provider, registryAddress, { multicall: false });
     expect(e.maxSlaBlocks).to.equal(r.maxSlaBlocks);
   });
 
   it("ENTRY_POINT_V06 is the canonical ERC-4337 v0.6 EntryPoint address (checksum-exact)", () => {
     expect(ENTRY_POINT_V06).to.equal("0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789");
     expect(ethers.getAddress(ENTRY_POINT_V06)).to.equal(ENTRY_POINT_V06);
+  });
+
+  it("multicall=true and multicall=false produce identical reads (equivalence)", async () => {
+    const { escrowAddress, registryAddress } = await loadFixture(deploy);
+    const MULTICALL3 = "0xcA11bde05977b3631167028862bE2a173976CA11";
+
+    const MiniMulticall3 = await ethers.getContractFactory("MiniMulticall3");
+    const mm = await MiniMulticall3.deploy();
+    await mm.waitForDeployment();
+    const code = await ethers.provider.getCode(await mm.getAddress());
+    await ethers.provider.send("hardhat_setCode", [MULTICALL3, code]);
+
+    const [eMc, eFb, rMc, rFb] = await Promise.all([
+      readEscrowConstants(ethers.provider,   escrowAddress,   { multicall: true  }),
+      readEscrowConstants(ethers.provider,   escrowAddress,   { multicall: false }),
+      readRegistryConstants(ethers.provider, registryAddress, { multicall: true  }),
+      readRegistryConstants(ethers.provider, registryAddress, { multicall: false }),
+    ]);
+    expect(eMc).to.deep.equal(eFb);
+    expect(rMc).to.deep.equal(rFb);
   });
 });
 

@@ -1,5 +1,10 @@
 # @surelock-labs/protocol
 
+## 0.1.11
+
+- Added Multicall3 primitives: `MULTICALL3` canonical address (`0xcA11bde0...`, same on every EVM chain), `aggregate3(provider, calls[])` helper, `Call3` type.
+- `readEscrowConstants` and `readRegistryConstants` now issue one `aggregate3` call instead of fan-out `Promise.all` reads -- cuts 9 RPCs to 1 and 4 RPCs to 1 respectively. Opt out with `{ multicall: false }` on chains without Multicall3 deployed.
+
 ## 0.1.10
 
 - Added shared primitives previously local to `@surelock-labs/bundler`:

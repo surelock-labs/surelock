@@ -1,5 +1,9 @@
 # @surelock-labs/bundler
 
+## 0.1.11
+
+- Protocol pin bumped to `^0.1.11` -- bundler re-exports `readEscrowConstants` / `readRegistryConstants` now use Multicall3 by default. No API change.
+
 ## 0.1.10
 
 - Moved shared primitives to `@surelock-labs/protocol` -- `ENTRY_POINT_V06`, `computeUserOpHash`, `UserOperation`, `readEscrowConstants`, `readRegistryConstants`, `EscrowConstants`, `RegistryConstants`. They remain re-exported from `@surelock-labs/bundler`, so integrator imports are unchanged.

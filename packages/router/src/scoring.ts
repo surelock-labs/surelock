@@ -19,6 +19,7 @@
  */
 
 import { ethers } from "ethers";
+import { aggregate3 } from "@surelock-labs/protocol";
 import { ESCROW_ABI } from "./abis";
 
 /** Default lookback: ~2.8h on Base at ~2s/block. */
@@ -186,6 +187,7 @@ export async function scoreBundlers(
   escrowAddr: string,
   offers: ReadonlyArray<{ bundler: string; collateralWei: bigint }>,
   lookback = DEFAULT_LOOKBACK_BLOCKS,
+  opts: { multicall?: boolean } = {},
 ): Promise<Map<string, BundlerScore>> {
   if (offers.length === 0) return new Map();
 
@@ -194,7 +196,6 @@ export async function scoreBundlers(
   const from = Math.max(0, tip - lookback);
   const currentBlock = BigInt(tip);
 
-  // Deduplicate; track max collateral per bundler.
   const maxCollateral = new Map<string, bigint>();
   for (const o of offers) {
     const k = o.bundler.toLowerCase();
@@ -210,19 +211,24 @@ export async function scoreBundlers(
   ]);
 
   const settledIds = new Set(allSettled.map((e) => e.args.commitId.toString()));
+  const addrs = [...maxCollateral.keys()];
 
-  const scores = await Promise.all(
-    [...maxCollateral.entries()].map(async ([addr, col]) => {
-      const idle = BigInt(await escrow.idleBalance(addr));
-      const created = allCreated.filter(
-        (e) => (e.args.bundler as string).toLowerCase() === addr,
-      );
-      const accepted = allAccepted.filter(
-        (e) => (e.args.bundler as string).toLowerCase() === addr,
-      );
-      return computeBundlerScore(addr, col, idle, created, accepted, settledIds, currentBlock, settlementGraceBlocks);
-    }),
-  );
+  let idles: bigint[];
+  if (opts.multicall !== false) {
+    const abi = ethers.AbiCoder.defaultAbiCoder();
+    const returnData = await aggregate3(provider,
+      addrs.map(a => ({ target: escrowAddr, callData: escrow.interface.encodeFunctionData("idleBalance", [a]) })));
+    idles = returnData.map(d => BigInt(abi.decode(["uint256"], d)[0] as bigint));
+  } else {
+    idles = await Promise.all(addrs.map(a => escrow.idleBalance(a).then(BigInt)));
+  }
+
+  const scores = addrs.map((addr, i) => {
+    const col = maxCollateral.get(addr)!;
+    const created = allCreated.filter((e) => (e.args.bundler as string).toLowerCase() === addr);
+    const accepted = allAccepted.filter((e) => (e.args.bundler as string).toLowerCase() === addr);
+    return computeBundlerScore(addr, col, idles[i], created, accepted, settledIds, currentBlock, settlementGraceBlocks);
+  });
 
   const out = new Map<string, BundlerScore>();
   for (const s of scores) out.set(s.bundler.toLowerCase(), s);

@@ -1,5 +1,10 @@
 # @surelock-labs/router
 
+## 0.1.7
+
+- `scoreBundlers` now collapses the N per-bundler `idleBalance` reads into a single Multicall3 `aggregate3` call. Opt out with `{ multicall: false }`.
+- Protocol pin bumped to `^0.1.11`.
+
 ## 0.1.6
 
 - Added `totalCommitValue(provider, escrow, offer)` -- returns `offer.feePerOp + protocolFeeWei()` read live. Matches the `totalCommitValue` term in `docs/DESIGN.md`.
