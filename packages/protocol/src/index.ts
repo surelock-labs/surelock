@@ -12,3 +12,5 @@ export type { EscrowConstants, RegistryConstants } from "./constants";
 
 export { MULTICALL3, aggregate3 } from "./multicall";
 export type { Call3 } from "./multicall";
+
+export { withRetry } from "./retry";

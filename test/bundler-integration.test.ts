@@ -1000,3 +1000,36 @@ describe("deregisterExpired", () => {
     expect(pending).to.equal(MIN_BOND);
   });
 });
+
+describe("createBundlerClient factory claimPayout", () => {
+  it("threads fromBlock through to the pinned read", async () => {
+    const fix = await loadFixture(deploy);
+    const { registryAddress, escrowAddress, bundler, user } = fix;
+    const { createBundlerClient } = await import("@surelock-labs/bundler");
+
+    const { quoteId } = await register(bundler, registryAddress, { feePerOp: ONE_GWEI, slaBlocks: 10, collateralWei: COLLATERAL });
+    await deposit(bundler, escrowAddress, COLLATERAL);
+    const escrow = await ethers.getContractAt("SLAEscrow", escrowAddress);
+    const protocolFee = BigInt(await escrow.protocolFeeWei());
+    const userOp = ethers.keccak256(ethers.toUtf8Bytes("factory-bundler-pinned"));
+    const tx = await escrow.connect(user).commit(quoteId, userOp, bundler.address, COLLATERAL, 10, { value: ONE_GWEI + protocolFee });
+    const receipt = await tx.wait();
+    const log = receipt!.logs.map((l: any) => { try { return escrow.interface.parseLog(l); } catch { return null; } }).find((e: any) => e?.name === "CommitCreated");
+    const commitId = BigInt(log!.args.commitId);
+    const esc = await ethers.getContractAt("SLAEscrowTestable", escrowAddress);
+    await esc.connect(bundler).accept(commitId);
+    const blockBeforeSettle = await ethers.provider.getBlockNumber();
+    await esc.connect(bundler)["settle(uint256)"](commitId);
+    expect(BigInt(await escrow.pendingWithdrawals(bundler.address))).to.equal(ONE_GWEI);
+
+    const client = createBundlerClient({ rpcUrl: "http://unused", registryAddress, escrowAddress });
+
+    const pinned = await client.claimPayout(bundler, blockBeforeSettle);
+    expect(pinned).to.equal(0n);
+    expect(BigInt(await escrow.pendingWithdrawals(bundler.address))).to.equal(ONE_GWEI);
+
+    const noPin = await client.claimPayout(bundler);
+    expect(noPin).to.equal(ONE_GWEI);
+    expect(BigInt(await escrow.pendingWithdrawals(bundler.address))).to.equal(0n);
+  });
+});

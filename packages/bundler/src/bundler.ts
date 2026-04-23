@@ -503,8 +503,8 @@ export function createBundlerClient(config: BundlerConfig) {
       txIndex: number,
     ) => settle(signer, config.escrowAddress, commitId, inclusionBlock, blockHeaderRlp, receiptProof, txIndex),
 
-    claimPayout: (signer: ethers.Signer) =>
-      claimPayout(signer, config.escrowAddress),
+    claimPayout: (signer: ethers.Signer, fromBlock?: ethers.BlockTag) =>
+      claimPayout(signer, config.escrowAddress, fromBlock),
 
     getCommit: (commitId: bigint, blockTag?: ethers.BlockTag) =>
       getCommit(provider, config.escrowAddress, commitId, blockTag),
