@@ -41,12 +41,16 @@ export const DEFAULT_LOOKBACK_BLOCKS = 5_000;
  *  public nodes) cap at 10_000; 9_000 leaves headroom. */
 const LOG_CHUNK_BLOCKS = 9_000;
 
+/** Bounds fan-out on large windows so we don't trip provider rate limits. */
+const LOG_CHUNK_CONCURRENCY = 4;
+
 async function queryFilterChunked(
   contract: ethers.Contract,
   filter: ethers.ContractEventName,
   fromBlock: number,
   toBlock: number,
   chunkSize = LOG_CHUNK_BLOCKS,
+  concurrency = LOG_CHUNK_CONCURRENCY,
 ): Promise<ethers.EventLog[]> {
   if (fromBlock > toBlock) return [];
   if (toBlock - fromBlock + 1 <= chunkSize) {
@@ -56,10 +60,20 @@ async function queryFilterChunked(
   for (let lo = fromBlock; lo <= toBlock; lo += chunkSize) {
     ranges.push([lo, Math.min(lo + chunkSize - 1, toBlock)]);
   }
-  const chunks = await Promise.all(
-    ranges.map(([lo, hi]) => contract.queryFilter(filter, lo, hi) as Promise<ethers.EventLog[]>),
+  const out: ethers.EventLog[][] = new Array(ranges.length);
+  let cursor = 0;
+  const worker = async () => {
+    while (true) {
+      const i = cursor++;
+      if (i >= ranges.length) return;
+      const [lo, hi] = ranges[i]!;
+      out[i] = await contract.queryFilter(filter, lo, hi) as ethers.EventLog[];
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, ranges.length) }, worker),
   );
-  return chunks.flat();
+  return out.flat();
 }
 
 export interface BundlerScore {

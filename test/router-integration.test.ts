@@ -377,6 +377,33 @@ describe("reliability scoring", () => {
       }
     });
 
+    it("queryFilter concurrency is capped at 4 in-flight per call", async () => {
+      const { escrowAddress, offers } = await loadFixture(deployScoringEscrow);
+      const { mine } = await import("@nomicfoundation/hardhat-network-helpers");
+      const { scoreBundler } = await import("../packages/router/src/scoring");
+      await mine(100_000);
+
+      let inFlight = 0;
+      let peak = 0;
+      const proto = (ethers as any).BaseContract?.prototype ?? (ethers as any).Contract.prototype;
+      const origQF = proto.queryFilter;
+      proto.queryFilter = async function(filter: any, f: any, t: any) {
+        inFlight++;
+        peak = Math.max(peak, inFlight);
+        try {
+          return await origQF.call(this, filter, f, t);
+        } finally {
+          inFlight--;
+        }
+      };
+      try {
+        await scoreBundler(ethers.provider, escrowAddress, offers[0].bundler, COLLATERAL, 100_000);
+        expect(peak, "max in-flight queryFilter calls must respect the concurrency cap").to.be.at.most(4 * 3);
+      } finally {
+        proto.queryFilter = origQF;
+      }
+    });
+
     it("transient getCode failure rejects scoreBundlers and emits no fallback warn", async () => {
       const { escrowAddress, offers } = await loadFixture(deployScoringEscrow);
       const { MULTICALL3 } = await import("@surelock-labs/protocol");
