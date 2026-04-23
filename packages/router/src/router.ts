@@ -1,4 +1,5 @@
 import { ethers } from "ethers";
+import { withRetry } from "@surelock-labs/protocol";
 import { REGISTRY_ABI, ESCROW_ABI } from "./abis";
 import { selectBest } from "./strategies";
 import { scoreBundlers, BundlerScore, DEFAULT_LOOKBACK_BLOCKS } from "./scoring";
@@ -129,7 +130,7 @@ export async function claimPayout(
   const readPending = fromBlock !== undefined
     ? () => escrow.pendingWithdrawals(addr, { blockTag: fromBlock })
     : () => escrow.pendingWithdrawals(addr);
-  const pending = BigInt(await readPending());
+  const pending = BigInt(await (fromBlock !== undefined ? withRetry(readPending) : readPending()));
   if (pending === 0n) return 0n;
   const tx = await escrow.claimPayout();
   const receipt = await tx.wait();
@@ -253,9 +254,9 @@ export function createRouter(config: RouterConfig) {
       return claimRefund(signer, config.escrowAddress, commitId);
     },
 
-    claimPayout(signer: ethers.Signer) {
+    claimPayout(signer: ethers.Signer, fromBlock?: ethers.BlockTag) {
       if (!config.escrowAddress) throw new Error("escrowAddress not set in RouterConfig");
-      return claimPayout(signer, config.escrowAddress);
+      return claimPayout(signer, config.escrowAddress, fromBlock);
     },
   };
 }

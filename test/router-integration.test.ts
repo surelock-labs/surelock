@@ -459,4 +459,24 @@ describe("cancel / claimRefund / claimPayout (router SDK)", () => {
     const got = await totalCommitValue(ethers.provider, escrowAddress, offer);
     expect(got).to.equal(offer.feePerOp + newFee);
   });
+
+  it("createRouter().claimPayout threads fromBlock through to the pinned read", async () => {
+    const { createRouter } = await import("@surelock-labs/router");
+    const { registryAddress, escrowAddress, escrow, user, offer } = await deployEscrow();
+    const userOpHash = ethers.keccak256(ethers.toUtf8Bytes("factory-pinned"));
+    const { commitId } = await commitOp(user, escrowAddress, offer, userOpHash);
+    const blockBeforeCancel = await ethers.provider.getBlockNumber();
+    await cancel(user, escrowAddress, commitId);
+    expect(BigInt(await escrow.pendingWithdrawals(user.address))).to.equal(ONE_GWEI);
+
+    const router = createRouter({ rpcUrl: "http://unused", registryAddress, escrowAddress });
+
+    const pinned = await router.claimPayout(user, blockBeforeCancel);
+    expect(pinned).to.equal(0n);
+    expect(BigInt(await escrow.pendingWithdrawals(user.address))).to.equal(ONE_GWEI);
+
+    const noPin = await router.claimPayout(user);
+    expect(noPin).to.equal(ONE_GWEI);
+    expect(BigInt(await escrow.pendingWithdrawals(user.address))).to.equal(0n);
+  });
 });
