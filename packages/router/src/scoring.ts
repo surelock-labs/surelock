@@ -37,6 +37,31 @@ export function _resetMulticallAbsentWarned(): void {
 /** Default lookback: ~2.8h on Base at ~2s/block. */
 export const DEFAULT_LOOKBACK_BLOCKS = 5_000;
 
+/** Max block span per eth_getLogs call. Public RPCs (Infura, Alchemy, Base
+ *  public nodes) cap at 10_000; 9_000 leaves headroom. */
+const LOG_CHUNK_BLOCKS = 9_000;
+
+async function queryFilterChunked(
+  contract: ethers.Contract,
+  filter: ethers.ContractEventName,
+  fromBlock: number,
+  toBlock: number,
+  chunkSize = LOG_CHUNK_BLOCKS,
+): Promise<ethers.EventLog[]> {
+  if (fromBlock > toBlock) return [];
+  if (toBlock - fromBlock + 1 <= chunkSize) {
+    return await contract.queryFilter(filter, fromBlock, toBlock) as ethers.EventLog[];
+  }
+  const ranges: Array<[number, number]> = [];
+  for (let lo = fromBlock; lo <= toBlock; lo += chunkSize) {
+    ranges.push([lo, Math.min(lo + chunkSize - 1, toBlock)]);
+  }
+  const chunks = await Promise.all(
+    ranges.map(([lo, hi]) => contract.queryFilter(filter, lo, hi) as Promise<ethers.EventLog[]>),
+  );
+  return chunks.flat();
+}
+
 export interface BundlerScore {
   bundler: string;
   /** Bundler-level headroom heuristic: idleBalance / max(collateralWei across scored offers),
@@ -171,9 +196,9 @@ export async function scoreBundler(
   const [idle, settlementGraceBlocks, allCreated, accepted, allSettled] = await Promise.all([
     escrow.idleBalance(bundler).then(BigInt),
     escrow.SETTLEMENT_GRACE_BLOCKS().then(BigInt),
-    escrow.queryFilter(escrow.filters.CommitCreated(), from, tip) as Promise<ethers.EventLog[]>,
-    escrow.queryFilter(escrow.filters.CommitAccepted(null, bundler), from, tip) as Promise<ethers.EventLog[]>,
-    escrow.queryFilter(escrow.filters.Settled(), from, tip) as Promise<ethers.EventLog[]>,
+    queryFilterChunked(escrow, escrow.filters.CommitCreated(), from, tip),
+    queryFilterChunked(escrow, escrow.filters.CommitAccepted(null, bundler), from, tip),
+    queryFilterChunked(escrow, escrow.filters.Settled(), from, tip),
   ]);
 
   const created = allCreated.filter(
@@ -217,9 +242,9 @@ export async function scoreBundlers(
 
   const [settlementGraceBlocks, allCreated, allAccepted, allSettled] = await Promise.all([
     escrow.SETTLEMENT_GRACE_BLOCKS().then(BigInt),
-    escrow.queryFilter(escrow.filters.CommitCreated(), from, tip) as Promise<ethers.EventLog[]>,
-    escrow.queryFilter(escrow.filters.CommitAccepted(), from, tip) as Promise<ethers.EventLog[]>,
-    escrow.queryFilter(escrow.filters.Settled(), from, tip) as Promise<ethers.EventLog[]>,
+    queryFilterChunked(escrow, escrow.filters.CommitCreated(),  from, tip),
+    queryFilterChunked(escrow, escrow.filters.CommitAccepted(), from, tip),
+    queryFilterChunked(escrow, escrow.filters.Settled(),        from, tip),
   ]);
 
   const settledIds = new Set(allSettled.map((e) => e.args.commitId.toString()));
