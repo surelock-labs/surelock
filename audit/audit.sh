@@ -58,9 +58,12 @@ echo "==> Building audit image..."
 
 echo "==> Running: $TOOL..."
 "${DOCKER[@]}" rm -f "$IMAGE" 2>/dev/null || true
+set +e
 "${DOCKER[@]}" run --name "$IMAGE" \
   -w "$WORKDIR" \
-  "$IMAGE" bash audit/_inner.sh "$@" || true
+  "$IMAGE" bash audit/_inner.sh "$@"
+rc=$?
+set -e
 
 echo "==> Copying reports..."
 mkdir -p "$REPORT_DIR"
@@ -69,3 +72,9 @@ mkdir -p "$REPORT_DIR"
 
 echo ""
 echo "Reports in: $REPORT_DIR/"
+
+if [ "$rc" -ne 0 ]; then
+  echo ""
+  echo "==> FAIL: audit tool exited with code $rc"
+  exit "$rc"
+fi
