@@ -1,7 +1,3 @@
-/// @notice Verifies deployed contracts on Sourcify (not Basescan/Etherscan).
-/// Uses hardhat-verify's `verify:sourcify` task -- no API key required.
-/// For Basescan verification use `verify:etherscan` with BASESCAN_API_KEY set.
-/// Reads addresses from deployments/{chainId}.json written by deploy.ts.
 /// Usage: npm run verify -- --network baseSepolia
 
 import { run, network, ethers } from "hardhat";

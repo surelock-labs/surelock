@@ -170,7 +170,7 @@ async function main() {
     console.log(`\nAddresses written -> deployments/${chainId}.json`);
 
     if (isLive) {
-        console.log("\nNext step -- verify on Basescan:");
+        console.log("\nNext step -- verify on Sourcify:");
         console.log(`  npm run verify -- --network ${network.name}`);
     }
 }
