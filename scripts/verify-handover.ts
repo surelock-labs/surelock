@@ -11,6 +11,9 @@ async function main() {
     const deployer = process.env["DEPLOYER"];
     if (!multisig) throw new Error("MULTISIG env var required (the Safe that should hold PROPOSER_ROLE)");
     if (!deployer) throw new Error("DEPLOYER env var required (the EOA that should have renounced)");
+    if (multisig.toLowerCase() === deployer.toLowerCase()) {
+        throw new Error("MULTISIG and DEPLOYER must be distinct: they are the take-over Safe and the renouncing EOA, respectively");
+    }
 
     const { chainId } = await ethers.provider.getNetwork();
     const dep = loadDeployment(chainId);
@@ -37,6 +40,8 @@ async function main() {
 
     const multiHasProp = await timelock.hasRole(PROPOSER_ROLE, multisig) as boolean;
     checks.push(["multisig has PROPOSER_ROLE", multiHasProp, ""]);
+    const multiHasCanceller = await timelock.hasRole(CANCELLER_ROLE, multisig) as boolean;
+    checks.push(["multisig has CANCELLER_ROLE", multiHasCanceller, ""]);
     const depHasProp = await timelock.hasRole(PROPOSER_ROLE, deployer) as boolean;
     checks.push(["deployer does NOT have PROPOSER_ROLE", !depHasProp, ""]);
     const depHasAdmin = await timelock.hasRole(DEFAULT_ADMIN_ROLE, deployer) as boolean;
