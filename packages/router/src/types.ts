@@ -25,4 +25,10 @@ export interface RouterConfig {
   registryAddress: string;
   /** SLAEscrow contract address (needed for commitOp). */
   escrowAddress?: string;
+  /**
+   * Use Multicall3 for reliability scoring reads when available.
+   * Defaults to true; `selectReliable` falls back to direct reads with a
+   * console.warn when Multicall3 is not deployed on the connected chain.
+   */
+  multicall?: boolean;
 }

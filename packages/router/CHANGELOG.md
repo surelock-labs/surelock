@@ -3,6 +3,9 @@
 ## 0.1.7
 
 - `scoreBundlers` now collapses the N per-bundler `idleBalance` reads into a single Multicall3 `aggregate3` call. Opt out with `{ multicall: false }`.
+- When Multicall3 is not deployed on the connected chain, `scoreBundlers` automatically falls back to direct reads and emits a single `console.warn` on the slow path -- keeps reliability scoring usable on custom/local chains without silent degradation.
+- `RouterConfig.multicall` and `fetchAndScoreQuotes(..., { multicall })` expose the same opt-out path used by `scoreBundlers`.
+- `fetchQuotes` rejects invalid `pageSize` values (`<= 0`, non-integer, non-safe-integer) instead of risking a non-progressing page loop.
 - Protocol pin bumped to `^0.1.11`.
 
 ## 0.1.6

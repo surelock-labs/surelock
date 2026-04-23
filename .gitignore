@@ -35,3 +35,4 @@ hardhat.config.d.ts.map
 
 # localhost hardhat deployment (ephemeral)
 deployments/31337.json
+.DS_Store

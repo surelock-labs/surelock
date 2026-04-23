@@ -4,7 +4,17 @@
 import { expect }   from "chai";
 import { ethers }   from "hardhat";
 import { loadFixture } from "@nomicfoundation/hardhat-network-helpers";
-import { fetchQuotes, selectBest, commitOp, cancel, claimRefund, claimPayout, totalCommitValue } from "@surelock-labs/router";
+import {
+  fetchQuotes,
+  selectBest,
+  commitOp,
+  cancel,
+  claimRefund,
+  claimPayout,
+  totalCommitValue,
+  scoreBundlers,
+  fetchAndScoreQuotes,
+} from "@surelock-labs/router";
 import type { Offer } from "@surelock-labs/router";
 import { register, deposit, accept } from "@surelock-labs/bundler";
 
@@ -88,6 +98,13 @@ describe("fetchQuotes (integration)", () => {
     const registry = await Factory.deploy(owner.address, ethers.parseEther("0.0001"));
     const offers = await fetchQuotes(ethers.provider, await registry.getAddress());
     expect(offers).to.deep.equal([]);
+  });
+
+  it("rejects invalid page sizes before querying", async () => {
+    const { provider, registryAddress } = await loadFixture(deploy);
+    await expect(fetchQuotes(provider, registryAddress, 0)).to.be.rejectedWith("pageSize must be a positive safe integer");
+    await expect(fetchQuotes(provider, registryAddress, -1)).to.be.rejectedWith("pageSize must be a positive safe integer");
+    await expect(fetchQuotes(provider, registryAddress, 1.5)).to.be.rejectedWith("pageSize must be a positive safe integer");
   });
 });
 
@@ -245,6 +262,48 @@ describe("active vs routable -- fetchQuotes returns offers that may lack idle co
     const routable = await registry.listRoutable(escrowAddress);
     expect(routable.length).to.equal(1);
     expect(routable[0].bundler.toLowerCase()).to.equal(bundlerFunded.address.toLowerCase());
+  });
+});
+
+// -- reliability scoring -------------------------------------------------------
+
+describe("reliability scoring", () => {
+  async function deployScoringEscrow() {
+    const [owner, bundlerA, bundlerB] = await ethers.getSigners();
+    const BOND = ethers.parseEther("0.0001");
+    const RegF = await ethers.getContractFactory("QuoteRegistry");
+    const reg  = await RegF.deploy(owner.address, BOND);
+    const EscF = await ethers.getContractFactory("SLAEscrowTestable");
+    const { upgrades } = await import("hardhat");
+    const esc = await upgrades.deployProxy(EscF, [await reg.getAddress(), owner.address], { kind: "uups" }) as any;
+    const registryAddress = await reg.getAddress();
+    const escrowAddress = await esc.getAddress();
+
+    const offerA = await register(bundlerA, registryAddress, { feePerOp: ONE_GWEI,       slaBlocks: 5, collateralWei: COLLATERAL });
+    const offerB = await register(bundlerB, registryAddress, { feePerOp: ONE_GWEI * 2n,  slaBlocks: 6, collateralWei: COLLATERAL * 2n });
+    await deposit(bundlerA, escrowAddress, COLLATERAL);
+
+    return { registryAddress, escrowAddress, bundlerA, bundlerB, offers: [offerA, offerB] };
+  }
+
+  it("scoreBundlers falls back to direct reads when Multicall3 is unavailable", async () => {
+    const { escrowAddress, bundlerA, bundlerB, offers } = await loadFixture(deployScoringEscrow);
+    const direct = await scoreBundlers(ethers.provider, escrowAddress, offers, 100, { multicall: false });
+    const auto   = await scoreBundlers(ethers.provider, escrowAddress, offers, 100);
+    expect(auto.get(bundlerA.address.toLowerCase())!.idleBalance)
+      .to.equal(direct.get(bundlerA.address.toLowerCase())!.idleBalance)
+      .and.to.equal(COLLATERAL);
+    expect(auto.get(bundlerB.address.toLowerCase())!.idleBalance)
+      .to.equal(direct.get(bundlerB.address.toLowerCase())!.idleBalance)
+      .and.to.equal(0n);
+  });
+
+  it("fetchAndScoreQuotes exposes the same multicall opt-out path", async () => {
+    const { registryAddress, escrowAddress, bundlerA } = await loadFixture(deployScoringEscrow);
+    const scored = await fetchAndScoreQuotes(ethers.provider, registryAddress, escrowAddress, 100, { multicall: false });
+    expect(scored).to.have.length(2);
+    expect(scored.find(({ offer }) => offer.bundler.toLowerCase() === bundlerA.address.toLowerCase())!.score.idleBalance)
+      .to.equal(COLLATERAL);
   });
 });
 
