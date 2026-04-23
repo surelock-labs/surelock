@@ -178,6 +178,34 @@ export interface ReceiptProof {
   txIndex: number;
 }
 
+// Max concurrent eth_getTransactionReceipt calls in the bounded fallback path.
+// Public RPCs rate-limit aggressively; 8 keeps a 500-tx Base block under their
+// per-second cap while still parallelising enough to be fast.
+const MAX_RECEIPT_CONCURRENCY = 8;
+
+export async function fetchBlockReceipts(
+  provider: RpcProvider,
+  blockTag: string,
+  txs: Array<{ hash?: string } | string>,
+): Promise<any[]> {
+  try {
+    const all = await provider.send("eth_getBlockReceipts", [blockTag]);
+    if (Array.isArray(all) && all.length === txs.length) return all;
+  } catch {
+    // fall through to bounded concurrency
+  }
+
+  const receipts: any[] = new Array(txs.length);
+  for (let i = 0; i < txs.length; i += MAX_RECEIPT_CONCURRENCY) {
+    const slice = txs.slice(i, i + MAX_RECEIPT_CONCURRENCY);
+    const results = await Promise.all(
+      slice.map((tx: any) => provider.send("eth_getTransactionReceipt", [tx.hash ?? tx])),
+    );
+    for (let j = 0; j < results.length; j++) receipts[i + j] = results[j];
+  }
+  return receipts;
+}
+
 /**
  * Build a Merkle Patricia Trie receipt proof for `txHash` within `blockNumber`.
  *
@@ -207,9 +235,7 @@ export async function buildReceiptProof(
   );
   if (txIndex === -1) throw new Error(`tx ${txHash} not found in block ${blockNumber}`);
 
-  const receipts: any[] = await Promise.all(
-    txs.map((tx: any) => provider.send("eth_getTransactionReceipt", [tx.hash ?? tx])),
-  );
+  const receipts: any[] = await fetchBlockReceipts(provider, tag, txs);
 
   const trie = new Trie();
   for (let i = 0; i < receipts.length; i++) {
