@@ -172,7 +172,7 @@ Not yet deployed.
 |---|---|---|
 | `commit()` | 202,383 | Hot path -- client commits UserOp |
 | `accept()` | 85,676 | Bundler accepts, locks collateral |
-| `settle()` | ~175-200k | Includes MPT proof verification |
+| `settle()` | 262,864 | Real EntryPoint + MPT proof (`demo-settle.ts`) |
 | `claimRefund()` | 76,186 | SLA miss -- client recovers fee + collateral |
 | `cancel()` | 84,905 | Unaccepted commit after accept window |
 | `claimPayout()` | 41,427 | Withdraw pending balance |

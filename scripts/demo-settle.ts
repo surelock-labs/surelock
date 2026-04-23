@@ -255,6 +255,7 @@ async function main() {
     }
     ok(`commit.settled         = ${c2.settled}`);
     ok(`commit.inclusionBlock  = ${c2.inclusionBlock}`);
+    ok(`settle() gasUsed       = ${settleRcpt!.gasUsed.toLocaleString()} units`);
 
     // -- 6. Cleanup ----------------------------------------------------------
 
