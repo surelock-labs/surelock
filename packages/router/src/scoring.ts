@@ -25,12 +25,8 @@ import { ESCROW_ABI } from "./abis";
 let multicallAbsentWarned = false;
 
 async function multicallAvailable(provider: ethers.Provider): Promise<boolean> {
-  try {
-    const code = await provider.getCode(MULTICALL3);
-    return code !== "0x";
-  } catch {
-    return false;
-  }
+  const code = await provider.getCode(MULTICALL3);
+  return code !== "0x";
 }
 
 /** @internal -- test-only: reset the warn-once flag for isolated tests. */

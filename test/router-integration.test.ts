@@ -343,6 +343,28 @@ describe("reliability scoring", () => {
       await scoreBundlersSrc(ethers.provider, escrowAddress, offers, 100, { multicall: false });
       expect(warns).to.have.length(0);
     });
+
+    it("transient getCode failure rejects scoreBundlers and emits no fallback warn", async () => {
+      const { escrowAddress, offers } = await loadFixture(deployScoringEscrow);
+      const { MULTICALL3 } = await import("@surelock-labs/protocol");
+      const origGetCode = ethers.provider.getCode.bind(ethers.provider);
+      (ethers.provider as any).getCode = async (addr: string) => {
+        if (addr.toLowerCase() === MULTICALL3.toLowerCase()) {
+          throw new Error("simulated RPC outage");
+        }
+        return origGetCode(addr);
+      };
+      try {
+        let thrown: unknown = null;
+        try { await scoreBundlersSrc(ethers.provider, escrowAddress, offers, 100); }
+        catch (e) { thrown = e; }
+        expect(thrown, "scoreBundlers must reject on getCode failure").to.not.be.null;
+        expect(String((thrown as Error).message)).to.match(/simulated RPC outage/);
+        expect(warns, "no fallback warn should fire for a transient error").to.have.length(0);
+      } finally {
+        (ethers.provider as any).getCode = origGetCode;
+      }
+    });
   });
 });
 
