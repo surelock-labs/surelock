@@ -86,7 +86,7 @@ A bounded, collateral-backed SLA enforcement layer. When a bundler accepts a com
 
 ### What SureLock is not
 
-- **Not an absolute inclusion guarantee.** A bundler who does not call `accept()` within the grace window creates a liveness delay, not fund theft. The client's `feePerOp` is recoverable via `cancel()`; the accept window passes and the hash slot clears. There is no on-chain mechanism to force acceptance or reroute a PROPOSED commitment to a different bundler during the accept window.
+- **Not an absolute inclusion guarantee.** A bundler who does not call `accept()` within the grace window creates a liveness delay, not fund theft. The client can call `cancel()` -- once the commitment reaches `CANCELLED`, `feePerOp` is returned and the hash slot clears. The slot does not clear automatically on window expiry; an authorized actor must call `cancel()` for the state transition to complete. There is no on-chain mechanism to force acceptance or reroute a PROPOSED commitment to a different bundler during the accept window.
 - **Not an insurer or discretionary backstop.** On SLA miss the client recovers `feePerOp` plus the full slashed collateral -- a bounded contractual remedy. There is no reserve fund, no make-whole, and no recovery path outside the three terminal states (SETTLED, REFUNDED, CANCELLED).
 - **No guaranteed acceptance ordering.** Bundlers may selectively ignore commitments. `selectReliable()` filters by historic accept and settle rates, but cannot force acceptance of any individual commitment.
 
