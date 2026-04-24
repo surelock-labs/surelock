@@ -66,7 +66,7 @@ sequenceDiagram
 
 ### Two-phase design
 
-`accept()` is explicit bundler consent. Before acceptance, the client can cancel and recover their fee (via `cancel()` + `claimPayout()`) with no collateral at risk.
+`accept()` is explicit bundler consent. Before acceptance, the client can cancel (via `cancel()` + `claimPayout()`) and recover `feePerOp`. `protocolFee` (if non-zero) is retained by the protocol on all cancel paths; gas is not recovered. No collateral is at risk until acceptance.
 
 This prevents fake-hash griefing: a bundler who accepts is on the hook.
 
@@ -75,6 +75,35 @@ This prevents fake-hash griefing: a bundler who accepts is on the hook.
 `quoteId` is an offer-instance ID -- it changes each time a bundler re-registers. The stable identity key is the bundler's address.
 
 Clients route to a bundler's RPC endpoint by address, not by quoteId. The address -> RPC mapping is intentionally off-chain (operator-curated list); there is no on-chain directory at launch.
+
+---
+
+## Scope and limitations
+
+### What SureLock is
+
+A bounded, collateral-backed SLA enforcement layer. When a bundler accepts a commitment, slashing is enforced by the contract: no party can alter the committed terms after `commit()`, grant exceptions, or block `settle()` / `claimRefund()`.
+
+### What SureLock is not
+
+- **Not an absolute inclusion guarantee.** A bundler who does not call `accept()` within the grace window creates a liveness delay, not fund theft. The client's `feePerOp` is recoverable via `cancel()`; the accept window passes and the hash slot clears. There is no on-chain mechanism to force acceptance or reroute a PROPOSED commitment to a different bundler during the accept window.
+- **Not an insurer or discretionary backstop.** On SLA miss the client recovers `feePerOp` plus the full slashed collateral -- a bounded contractual remedy. There is no reserve fund, no make-whole, and no recovery path outside the three terminal states (SETTLED, REFUNDED, CANCELLED).
+- **No guaranteed acceptance ordering.** Bundlers may selectively ignore commitments. `selectReliable()` filters by historic accept and settle rates, but cannot force acceptance of any individual commitment.
+
+### Commit-time vs. settlement-time
+
+`commitOp()` binds a specific `userOpHash` at a specific block. Settlement later proves on-chain that the exact same hash was emitted by the EntryPoint within the SLA window. The proof is a `blockhash`-anchored MPT receipt proof -- no trusted party, but bounded by the EVM's 256-block window. Bundlers must call `settle()` within 256 blocks of inclusion; late inclusion followed by immediate settlement is always safe.
+
+The same `userOpHash` cannot be committed more than once (T23: hashes are permanently retired after any terminal state). Parallel routing requires a fresh UserOp with a fresh hash for each attempt.
+
+### Known limitations
+
+| Limitation | Detail |
+|---|---|
+| Accept-window reroute delay | A PROPOSED commitment cannot be rerouted until the accept window expires and `cancel()` is called. Max delay: `ACCEPT_GRACE_BLOCKS` (~24 s on Base). |
+| Bundler acceptance selectivity | Bundlers choose which commitments to accept; no on-chain FIFO enforcement. Use `selectReliable()` to filter by historic rates. |
+| Settlement blockhash window | `settle()` must be submitted within 256 blocks of inclusion. Early inclusion with a long SLA window requires the bundler to settle promptly. |
+| No deep-reorg protection | Proof is anchored to `blockhash()`. A reorg deeper than the inclusion block voids the proof; `claimRefund()` becomes available after the refund window opens. |
 
 ---
 
@@ -109,7 +138,7 @@ const best = await router.selectReliable();
 if (!best) throw new Error("no reliable offers");
 
 const { commitId } = await router.commitOp(signer, best, userOpHash);
-// bundler must accept within ACCEPT_GRACE_BLOCKS or client can cancel and recover fee
+// bundler must accept within ACCEPT_GRACE_BLOCKS or client can cancel and recover feePerOp (protocolFee is non-refundable)
 ```
 
 ### Bundler quick start
