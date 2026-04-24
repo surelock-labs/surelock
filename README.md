@@ -172,7 +172,7 @@ Not yet deployed.
 |---|---|---|
 | `commit()` | 202,383 | Hot path -- client commits UserOp |
 | `accept()` | 85,676 | Bundler accepts, locks collateral |
-| `settle()` | 262,864 | Real EntryPoint + MPT proof (`demo-settle.ts`) |
+| `settle()` | 265,986 | Real EntryPoint + MPT proof (`demo-settle.ts`) |
 | `claimRefund()` | 76,186 | SLA miss -- client recovers fee + collateral |
 | `cancel()` | 84,905 | Unaccepted commit after accept window |
 | `claimPayout()` | 41,427 | Withdraw pending balance |
@@ -313,7 +313,7 @@ SureLock is minimized-trust infrastructure, not zero-trust.
 
 **Bundler-client guarantees** are mathematical. Collateral, deadlines, and slashing are enforced by the contract and cannot be altered by any party after `commit()`.
 
-**Protocol (the deployer)** controls the admin key, fee recipient, and upgrade path. SLAEscrow is a UUPS proxy behind a 48h TimelockController -- any upgrade requires 48h public on-chain notice. Before mainnet the timelock proposer will be replaced by a Gnosis Safe multisig.
+**Protocol (the deployer)** controls the admin key, fee recipient, and upgrade path. SLAEscrow is a UUPS proxy behind a 48h TimelockController -- any upgrade requires 48h public on-chain notice. Before mainnet the timelock proposer will be replaced by a Safe multisig (safe.global).
 
 **Protocol fee** is 0 at launch. It can only be raised to `MAX_PROTOCOL_FEE_WEI` (0.001 ETH) through the timelock.
 

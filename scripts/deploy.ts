@@ -93,7 +93,7 @@ async function main() {
 
     // -- TimelockController ----------------------------------------------------
     // minDelay: 48h on mainnet. Override with TIMELOCK_DELAY env var (seconds).
-    // Deployer is initial proposer/admin -- replace with Gnosis Safe before mainnet.
+    // Deployer is initial proposer/admin -- replace with Safe multisig before mainnet.
     const timelockDelay = parseInt(process.env.TIMELOCK_DELAY ?? (48 * 3600).toString(), 10);
     const TimelockFactory = await ethers.getContractFactory("TimelockController");
     const timelock = await TimelockFactory.deploy(

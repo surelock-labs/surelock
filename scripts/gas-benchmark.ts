@@ -83,11 +83,11 @@ function printTable() {
     }
     console.log(sep);
     console.log([
-        pad("NOT MEASURED", COL[0]),
-        pad("settle()",     COL[1]),
-        padL("~175-200k",   COL[2]),
-        padL("-",           COL[3]),
-        padL("see settle demo", COL[4]),
+        pad("measured separately", COL[0]),
+        pad("settle()",            COL[1]),
+        padL("265,986",            COL[2]),
+        padL("-",                  COL[3]),
+        padL("see demo-settle.ts", COL[4]),
     ].join("  "));
     console.log("=".repeat(84));
 }

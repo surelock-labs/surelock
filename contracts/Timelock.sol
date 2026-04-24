@@ -5,7 +5,7 @@ pragma solidity 0.8.24;
 // The deployed instance owns the SLAEscrow proxy upgrade key.
 //
 // Role setup at deploy time (pre-multisig):
-//   proposers  = [deployer]      -- replace with Gnosis Safe before mainnet
+//   proposers  = [deployer]      -- replace with Safe multisig before mainnet
 //   executors  = [address(0)]    -- anyone can execute after delay (standard)
 //   admin      = deployer        -- allows adding multisig as proposer, then renounce
 //
