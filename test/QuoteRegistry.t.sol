@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.35;
 
+import {Test} from "forge-std/Test.sol";
 import {QuoteRegistry} from "src/QuoteRegistry.sol";
 
-contract QuoteRegistryTest {
+contract QuoteRegistryTest is Test {
     QuoteRegistry registry;
 
     function setUp() public {
@@ -11,6 +12,6 @@ contract QuoteRegistryTest {
     }
 
     function testInitialNextQuoteIdIsZero() public view {
-        assert(registry.nextQuoteId() == 0);
+        assertEq(registry.nextQuoteId(), 0);
     }
 }

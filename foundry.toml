@@ -7,6 +7,8 @@ libs = ["lib"]
 remappings = [
     "src/=src/",
     "test/=test/",
+    "forge-std/=lib/forge-std/src/",
+    "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
 ]
 solc_version = "0.8.35"
 evm_version = "prague"
