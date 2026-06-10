@@ -45,6 +45,19 @@ contract OfferRegistryTest is Test {
         assertEq(reg.nextOfferId(), 2);
     }
 
+    function testRegisterRejectsSlaBelowMinimum() public {
+        uint256 lifetime = reg.MIN_LIFETIME();
+        uint256 minSlaBlocks = reg.MIN_SLA_BLOCKS();
+
+        vm.prank(provider);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                OfferRegistry.InvalidSlaBlocks.selector, minSlaBlocks - 1, minSlaBlocks, reg.MAX_SLA_BLOCKS()
+            )
+        );
+        reg.register(0.01 ether, minSlaBlocks - 1, 0.03 ether, lifetime);
+    }
+
     function testDeregisterDeletesOffer() public {
         uint256 lifetime = reg.MIN_LIFETIME();
 

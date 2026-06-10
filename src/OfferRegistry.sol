@@ -2,6 +2,7 @@
 pragma solidity ^0.8.35;
 
 contract OfferRegistry {
+    uint256 public constant MIN_SLA_BLOCKS = 1;
     uint256 public constant MAX_SLA_BLOCKS = 1_000;
     uint256 public constant MIN_LIFETIME = 10_000;
     uint256 public constant MAX_LIFETIME = 1_000_000;
@@ -30,19 +31,23 @@ contract OfferRegistry {
 
     error OfferNotFound(uint256 offerId);
     error NotOfferOwner(uint256 offerId, address caller);
-    error InvalidSlaBlocks();
-    error InvalidFee();
-    error InvalidCollateral();
-    error InvalidLifetime();
+    error InvalidSlaBlocks(uint256 value, uint256 min, uint256 max);
+    error InvalidFee(uint256 value);
+    error InvalidCollateral(uint256 collateral, uint256 feePerOp);
+    error InvalidLifetime(uint256 value, uint256 min, uint256 max);
 
     function register(uint256 feePerOp, uint256 slaBlocks, uint256 collateral, uint256 lifetime)
         external
         returns (uint256 offerId)
     {
-        if (slaBlocks == 0 || slaBlocks > MAX_SLA_BLOCKS) revert InvalidSlaBlocks();
-        if (feePerOp == 0) revert InvalidFee();
-        if (collateral <= feePerOp) revert InvalidCollateral();
-        if (lifetime < MIN_LIFETIME || lifetime > MAX_LIFETIME) revert InvalidLifetime();
+        if (slaBlocks < MIN_SLA_BLOCKS || slaBlocks > MAX_SLA_BLOCKS) {
+            revert InvalidSlaBlocks(slaBlocks, MIN_SLA_BLOCKS, MAX_SLA_BLOCKS);
+        }
+        if (feePerOp == 0) revert InvalidFee(feePerOp);
+        if (collateral <= feePerOp) revert InvalidCollateral(collateral, feePerOp);
+        if (lifetime < MIN_LIFETIME || lifetime > MAX_LIFETIME) {
+            revert InvalidLifetime(lifetime, MIN_LIFETIME, MAX_LIFETIME);
+        }
 
         offerId = nextOfferId++;
 
@@ -71,7 +76,9 @@ contract OfferRegistry {
         Offer storage offer = offers[offerId];
         if (offer.provider == address(0)) revert OfferNotFound(offerId);
         if (offer.provider != msg.sender) revert NotOfferOwner(offerId, msg.sender);
-        if (lifetime < MIN_LIFETIME || lifetime > MAX_LIFETIME) revert InvalidLifetime();
+        if (lifetime < MIN_LIFETIME || lifetime > MAX_LIFETIME) {
+            revert InvalidLifetime(lifetime, MIN_LIFETIME, MAX_LIFETIME);
+        }
 
         offer.expiresAt = block.number + lifetime;
 
