@@ -4,6 +4,7 @@ pragma solidity ^0.8.35;
 import {Test} from "forge-std/Test.sol";
 import {OfferRegistry} from "src/OfferRegistry.sol";
 import {SLAEscrow} from "src/SLAEscrow.sol";
+import {WatcherRegistry} from "src/WatcherRegistry.sol";
 
 contract NonPayableAccount {
     function deposit(SLAEscrow escrow) external payable {
@@ -31,7 +32,8 @@ contract SLAEscrowWithdrawToTest is Test {
 
     function setUp() public {
         OfferRegistry registry = new OfferRegistry();
-        escrow = new SLAEscrow(address(registry), watcher, owner);
+        WatcherRegistry watcherRegistry = new WatcherRegistry(owner, watcher, watcher);
+        escrow = new SLAEscrow(address(registry), address(watcherRegistry), owner);
         account = new NonPayableAccount();
 
         vm.deal(address(this), 2 * AMOUNT);
@@ -60,12 +62,12 @@ contract SLAEscrowWithdrawToTest is Test {
     }
 
     function testWithdrawRejectsZeroAmount() public {
-        vm.expectRevert(SLAEscrow.ZeroBalance.selector);
+        vm.expectRevert(SLAEscrow.ZeroAmount.selector);
         escrow.withdraw(0);
     }
 
     function testWithdrawToRejectsZeroAmount() public {
-        vm.expectRevert(SLAEscrow.ZeroBalance.selector);
+        vm.expectRevert(SLAEscrow.ZeroAmount.selector);
         escrow.withdrawTo(beneficiary, 0);
     }
 }

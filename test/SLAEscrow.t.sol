@@ -4,13 +4,18 @@ pragma solidity ^0.8.35;
 import {Test} from "forge-std/Test.sol";
 import {OfferRegistry} from "src/OfferRegistry.sol";
 import {SLAEscrow} from "src/SLAEscrow.sol";
+import {ISLAEscrow, WatcherRegistry} from "src/WatcherRegistry.sol";
 
 contract SLAEscrowTest is Test {
     OfferRegistry reg;
     SLAEscrow escrow;
+    WatcherRegistry watcherRegistry;
 
     address owner = address(this);
     address watcher = address(0xA11CE);
+    address secondWatcher = address(0xB0B);
+    address feeRecipient = address(0xFEE);
+    address secondFeeRecipient = address(0xF00);
     address provider = address(0xCAFE);
     address client = address(0xC11E);
     address stranger = address(0xBAD);
@@ -18,6 +23,7 @@ contract SLAEscrowTest is Test {
     uint256 constant FEE = 0.01 ether;
     uint256 constant COLLATERAL = 0.03 ether;
     uint256 constant SLA_BLOCKS = 20;
+    uint256 constant ACCEPT_WINDOW_BLOCKS = 5;
     uint256 offerId;
 
     event CommitCreated(
@@ -29,17 +35,19 @@ contract SLAEscrowTest is Test {
         uint256 feePaid,
         uint256 collateral,
         uint256 slaBlocks,
-        uint256 protocolFee,
-        uint256 deadline
+        uint256 acceptDeadline,
+        uint256 protocolFee
     );
 
     function setUp() public {
         reg = new OfferRegistry();
-        escrow = new SLAEscrow(address(reg), watcher, owner);
+        watcherRegistry = new WatcherRegistry(owner, feeRecipient, watcher);
+        escrow = new SLAEscrow(address(reg), address(watcherRegistry), owner);
 
         vm.deal(provider, 10 ether);
         vm.deal(client, 10 ether);
         vm.deal(watcher, 10 ether);
+        vm.deal(feeRecipient, 10 ether);
 
         uint256 lifetime = reg.MIN_LIFETIME();
 
@@ -83,8 +91,7 @@ contract SLAEscrowTest is Test {
         SLAEscrow.Commit memory c = escrow.getCommit(commitId);
         vm.roll(c.acceptedBlock + 1);
 
-        vm.prank(watcher);
-        escrow.settle(commitId, c.acceptedBlock + 1);
+        _watcherSettle(commitId, c.acceptedBlock + 1);
 
         _assertStatus(commitId, SLAEscrow.CommitStatus.Settled);
         assertEq(escrow.lockedOf(provider), 0);
@@ -109,8 +116,7 @@ contract SLAEscrowTest is Test {
         SLAEscrow.Commit memory c = escrow.getCommit(commitId);
         vm.roll(c.deadline + 1);
 
-        vm.prank(watcher);
-        escrow.refund(commitId);
+        _watcherRefund(commitId);
 
         _assertStatus(commitId, SLAEscrow.CommitStatus.Refunded);
         assertEq(escrow.lockedOf(provider), 0);
@@ -164,7 +170,7 @@ contract SLAEscrowTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(SLAEscrow.UserOpUnavailable.selector, userOpHash, SLAEscrow.UserOpHashStatus.Active)
         );
-        escrow.commit{value: FEE}(offerId, userOpHash);
+        escrow.commit{value: FEE}(offerId, userOpHash, ACCEPT_WINDOW_BLOCKS);
     }
 
     function testCannotCommitConsumedUserOpHash() public {
@@ -178,8 +184,7 @@ contract SLAEscrowTest is Test {
         SLAEscrow.Commit memory c = escrow.getCommit(commitId);
         vm.roll(c.acceptedBlock + 1);
 
-        vm.prank(watcher);
-        escrow.settle(commitId, c.acceptedBlock + 1);
+        _watcherSettle(commitId, c.acceptedBlock + 1);
 
         vm.prank(client);
         vm.expectRevert(
@@ -187,7 +192,7 @@ contract SLAEscrowTest is Test {
                 SLAEscrow.UserOpUnavailable.selector, userOpHash, SLAEscrow.UserOpHashStatus.Consumed
             )
         );
-        escrow.commit{value: FEE}(offerId, userOpHash);
+        escrow.commit{value: FEE}(offerId, userOpHash, ACCEPT_WINDOW_BLOCKS);
     }
 
     function testCommitCreatedEventIncludesTerms() public {
@@ -197,11 +202,62 @@ contract SLAEscrowTest is Test {
 
         vm.expectEmit(true, true, true, true, address(escrow));
         emit CommitCreated(
-            1, offerId, client, provider, userOpHash, FEE, COLLATERAL, SLA_BLOCKS, fee, block.number + SLA_BLOCKS
+            1,
+            offerId,
+            client,
+            provider,
+            userOpHash,
+            FEE,
+            COLLATERAL,
+            SLA_BLOCKS,
+            block.number + ACCEPT_WINDOW_BLOCKS,
+            fee
         );
 
         vm.prank(client);
-        escrow.commit{value: FEE + fee}(offerId, userOpHash);
+        uint256 commitId = escrow.commit{value: FEE + fee}(offerId, userOpHash, ACCEPT_WINDOW_BLOCKS);
+
+        SLAEscrow.Commit memory c = escrow.getCommit(commitId);
+        assertEq(c.acceptDeadline, block.number + ACCEPT_WINDOW_BLOCKS);
+        assertEq(c.deadline, 0);
+    }
+
+    function testCommitRejectsZeroAcceptWindow() public {
+        bytes32 userOpHash = bytes32(uint256(19));
+
+        vm.prank(client);
+        vm.expectRevert(
+            abi.encodeWithSelector(SLAEscrow.InvalidAcceptWindow.selector, 0, 1, escrow.MAX_ACCEPT_WINDOW_BLOCKS())
+        );
+        escrow.commit{value: FEE}(offerId, userOpHash, 0);
+    }
+
+    function testCommitRejectsAcceptWindowAboveMaximum() public {
+        bytes32 userOpHash = bytes32(uint256(20));
+        uint256 acceptWindowBlocks = escrow.MAX_ACCEPT_WINDOW_BLOCKS() + 1;
+
+        vm.prank(client);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                SLAEscrow.InvalidAcceptWindow.selector, acceptWindowBlocks, 1, escrow.MAX_ACCEPT_WINDOW_BLOCKS()
+            )
+        );
+        escrow.commit{value: FEE}(offerId, userOpHash, acceptWindowBlocks);
+    }
+
+    function testCanAcceptAtAcceptDeadline() public {
+        _deposit(COLLATERAL);
+        uint256 commitId = _commit(bytes32(uint256(21)), FEE);
+
+        SLAEscrow.Commit memory c = escrow.getCommit(commitId);
+        vm.roll(c.acceptDeadline);
+
+        vm.prank(provider);
+        escrow.accept(commitId);
+
+        c = escrow.getCommit(commitId);
+        _assertStatus(commitId, SLAEscrow.CommitStatus.Active);
+        assertEq(c.deadline, c.acceptedBlock + SLA_BLOCKS);
     }
 
     function testCannotWithdrawLockedCollateral() public {
@@ -216,13 +272,13 @@ contract SLAEscrowTest is Test {
         escrow.withdraw(1);
     }
 
-    function testProtocolFeeIsPaidToWatcher() public {
+    function testProtocolFeeIsPaidToFeeRecipient() public {
         uint256 fee = 0.0002 ether;
         escrow.setProtocolFee(fee);
 
         uint256 commitId = _commit(bytes32(uint256(5)), FEE + fee);
 
-        assertEq(escrow.balanceOf(watcher), fee);
+        assertEq(escrow.balanceOf(feeRecipient), fee);
 
         vm.prank(client);
         escrow.cancel(commitId);
@@ -230,12 +286,76 @@ contract SLAEscrowTest is Test {
         vm.prank(client);
         escrow.withdraw(FEE);
 
-        vm.prank(watcher);
+        vm.prank(feeRecipient);
         escrow.withdraw(fee);
 
         assertEq(client.balance, 10 ether - fee);
-        assertEq(watcher.balance, 10 ether + fee);
+        assertEq(feeRecipient.balance, 10 ether + fee);
         assertEq(address(escrow).balance, 0);
+    }
+
+    function testOwnerCanUpdateWatcherRegistry() public {
+        WatcherRegistry newRegistry = new WatcherRegistry(owner, secondFeeRecipient, secondWatcher);
+
+        escrow.setWatcherRegistry(address(newRegistry));
+
+        assertEq(address(escrow.watcherRegistry()), address(newRegistry));
+    }
+
+    function testNonOwnerCannotUpdateWatcherRegistry() public {
+        WatcherRegistry newRegistry = new WatcherRegistry(owner, secondFeeRecipient, secondWatcher);
+
+        vm.prank(stranger);
+        vm.expectRevert();
+        escrow.setWatcherRegistry(address(newRegistry));
+    }
+
+    function testSetWatcherRegistryRejectsZeroAddress() public {
+        vm.expectRevert(abi.encodeWithSelector(SLAEscrow.ZeroAddress.selector, SLAEscrow.AddressParam.WatcherRegistry));
+        escrow.setWatcherRegistry(address(0));
+    }
+
+    function testSetWatcherRegistryRejectsSelf() public {
+        vm.expectRevert(abi.encodeWithSelector(SLAEscrow.ZeroAddress.selector, SLAEscrow.AddressParam.WatcherRegistry));
+        escrow.setWatcherRegistry(address(escrow));
+    }
+
+    function testUpdatedWatcherRegistryControlsResolution() public {
+        _deposit(COLLATERAL);
+        uint256 commitId = _commit(bytes32(uint256(22)), FEE);
+
+        vm.prank(provider);
+        escrow.accept(commitId);
+
+        SLAEscrow.Commit memory c = escrow.getCommit(commitId);
+        uint256 inclusionBlock = c.acceptedBlock + 1;
+        vm.roll(inclusionBlock);
+
+        WatcherRegistry oldRegistry = watcherRegistry;
+        WatcherRegistry newRegistry = new WatcherRegistry(owner, secondFeeRecipient, secondWatcher);
+        escrow.setWatcherRegistry(address(newRegistry));
+
+        vm.prank(watcher);
+        vm.expectRevert(abi.encodeWithSelector(SLAEscrow.NotWatcherRegistry.selector, address(oldRegistry)));
+        oldRegistry.settle(ISLAEscrow(address(escrow)), commitId, inclusionBlock);
+
+        vm.prank(secondWatcher);
+        newRegistry.settle(ISLAEscrow(address(escrow)), commitId, inclusionBlock);
+
+        _assertStatus(commitId, SLAEscrow.CommitStatus.Settled);
+    }
+
+    function testProtocolFeeUsesUpdatedWatcherRegistryFeeRecipient() public {
+        uint256 fee = 0.0002 ether;
+        WatcherRegistry newRegistry = new WatcherRegistry(owner, secondFeeRecipient, secondWatcher);
+
+        escrow.setProtocolFee(fee);
+        escrow.setWatcherRegistry(address(newRegistry));
+
+        _commit(bytes32(uint256(23)), FEE + fee);
+
+        assertEq(escrow.balanceOf(feeRecipient), 0);
+        assertEq(escrow.balanceOf(secondFeeRecipient), fee);
     }
 
     function testOnlyProviderCanAccept() public {
@@ -247,15 +367,19 @@ contract SLAEscrowTest is Test {
         escrow.accept(commitId);
     }
 
-    function testCannotAcceptAtDeadline() public {
+    function testCannotAcceptAfterAcceptDeadline() public {
         _deposit(COLLATERAL);
         uint256 commitId = _commit(bytes32(uint256(15)), FEE);
 
         SLAEscrow.Commit memory c = escrow.getCommit(commitId);
-        vm.roll(c.deadline);
+        vm.roll(c.acceptDeadline + 1);
 
         vm.prank(provider);
-        vm.expectRevert(abi.encodeWithSelector(SLAEscrow.DeadlineReached.selector, commitId, c.deadline, c.deadline));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                SLAEscrow.AcceptDeadlineReached.selector, commitId, c.acceptDeadline, c.acceptDeadline + 1
+            )
+        );
         escrow.accept(commitId);
     }
 
@@ -264,10 +388,9 @@ contract SLAEscrowTest is Test {
         uint256 commitId = _commit(bytes32(uint256(16)), FEE);
 
         SLAEscrow.Commit memory c = escrow.getCommit(commitId);
-        vm.roll(c.deadline + 1);
+        vm.roll(c.acceptDeadline + 1);
 
-        vm.prank(watcher);
-        escrow.cancel(commitId);
+        _watcherCancel(commitId);
 
         _assertStatus(commitId, SLAEscrow.CommitStatus.Cancelled);
         assertEq(escrow.lockedOf(provider), 0);
@@ -275,7 +398,7 @@ contract SLAEscrowTest is Test {
         assertEq(escrow.balanceOf(client), FEE);
     }
 
-    function testOnlyWatcherCanSettle() public {
+    function testOnlyWatcherRegistryCanSettle() public {
         _deposit(COLLATERAL);
         uint256 commitId = _commit(bytes32(uint256(7)), FEE);
 
@@ -283,11 +406,11 @@ contract SLAEscrowTest is Test {
         escrow.accept(commitId);
 
         vm.prank(stranger);
-        vm.expectRevert(abi.encodeWithSelector(SLAEscrow.NotWatcher.selector, stranger));
+        vm.expectRevert(abi.encodeWithSelector(SLAEscrow.NotWatcherRegistry.selector, stranger));
         escrow.settle(commitId, block.number + 1);
     }
 
-    function testOnlyWatcherCanRefund() public {
+    function testOnlyWatcherRegistryCanRefund() public {
         _deposit(COLLATERAL);
         uint256 commitId = _commit(bytes32(uint256(12)), FEE);
 
@@ -298,7 +421,7 @@ contract SLAEscrowTest is Test {
         vm.roll(c.deadline + 1);
 
         vm.prank(client);
-        vm.expectRevert(abi.encodeWithSelector(SLAEscrow.NotWatcher.selector, client));
+        vm.expectRevert(abi.encodeWithSelector(SLAEscrow.NotWatcherRegistry.selector, client));
         escrow.refund(commitId);
     }
 
@@ -315,8 +438,7 @@ contract SLAEscrowTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(SLAEscrow.InclusionAfterDeadline.selector, commitId, c.deadline, c.deadline + 1)
         );
-        vm.prank(watcher);
-        escrow.settle(commitId, c.deadline + 1);
+        _watcherSettle(commitId, c.deadline + 1);
     }
 
     function testCannotSettleWithInclusionBeforeAccept() public {
@@ -333,8 +455,7 @@ contract SLAEscrowTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(SLAEscrow.InclusionBeforeAccept.selector, commitId, c.acceptedBlock, c.acceptedBlock)
         );
-        vm.prank(watcher);
-        escrow.settle(commitId, c.acceptedBlock);
+        _watcherSettle(commitId, c.acceptedBlock);
     }
 
     function testCannotSettleFutureInclusionBlock() public {
@@ -349,8 +470,7 @@ contract SLAEscrowTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(SLAEscrow.InclusionInFuture.selector, commitId, c.acceptedBlock, c.acceptedBlock + 1)
         );
-        vm.prank(watcher);
-        escrow.settle(commitId, c.acceptedBlock + 1);
+        _watcherSettle(commitId, c.acceptedBlock + 1);
     }
 
     function testWatcherCanSettleLongAfterDeadlineWhenIncludedOnTime() public {
@@ -364,8 +484,7 @@ contract SLAEscrowTest is Test {
         uint256 inclusionBlock = c.acceptedBlock + 1;
         vm.roll(c.deadline + 10_000);
 
-        vm.prank(watcher);
-        escrow.settle(commitId, inclusionBlock);
+        _watcherSettle(commitId, inclusionBlock);
 
         _assertStatus(commitId, SLAEscrow.CommitStatus.Settled);
         assertEq(escrow.balanceOf(provider), COLLATERAL + FEE);
@@ -378,7 +497,22 @@ contract SLAEscrowTest is Test {
 
     function _commit(bytes32 userOpHash, uint256 value) internal returns (uint256 commitId) {
         vm.prank(client);
-        commitId = escrow.commit{value: value}(offerId, userOpHash);
+        commitId = escrow.commit{value: value}(offerId, userOpHash, ACCEPT_WINDOW_BLOCKS);
+    }
+
+    function _watcherCancel(uint256 commitId) internal {
+        vm.prank(watcher);
+        watcherRegistry.cancel(ISLAEscrow(address(escrow)), commitId);
+    }
+
+    function _watcherSettle(uint256 commitId, uint256 inclusionBlock) internal {
+        vm.prank(watcher);
+        watcherRegistry.settle(ISLAEscrow(address(escrow)), commitId, inclusionBlock);
+    }
+
+    function _watcherRefund(uint256 commitId) internal {
+        vm.prank(watcher);
+        watcherRegistry.refund(ISLAEscrow(address(escrow)), commitId);
     }
 
     function _assertStatus(uint256 commitId, SLAEscrow.CommitStatus status) internal view {

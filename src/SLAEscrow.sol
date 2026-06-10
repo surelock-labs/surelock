@@ -2,6 +2,7 @@
 pragma solidity ^0.8.35;
 
 import "./OfferRegistry.sol";
+import "./WatcherRegistry.sol";
 import "@openzeppelin/contracts/access/Ownable2Step.sol";
 import "@openzeppelin/contracts/utils/Address.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
@@ -10,6 +11,7 @@ contract SLAEscrow is Ownable2Step, ReentrancyGuardTransient {
     using Address for address payable;
 
     uint256 public constant MAX_PROTOCOL_FEE = 0.001 ether;
+    uint256 public constant MAX_ACCEPT_WINDOW_BLOCKS = 1_000;
 
     enum CommitStatus {
         Proposed,
@@ -25,6 +27,12 @@ contract SLAEscrow is Ownable2Step, ReentrancyGuardTransient {
         Consumed
     }
 
+    enum AddressParam {
+        Registry,
+        WatcherRegistry,
+        To
+    }
+
     struct Commit {
         address user;
         address provider;
@@ -33,6 +41,7 @@ contract SLAEscrow is Ownable2Step, ReentrancyGuardTransient {
         uint256 feePaid;
         uint256 collateral;
         uint256 acceptedBlock;
+        uint256 acceptDeadline;
         uint256 deadline;
         uint256 slaBlocks;
         CommitStatus status;
@@ -40,8 +49,8 @@ contract SLAEscrow is Ownable2Step, ReentrancyGuardTransient {
 
     uint256 public protocolFee;
     uint256 public nextCommitId = 1;
-    address public immutable watcher;
     OfferRegistry public immutable registry;
+    WatcherRegistry public watcherRegistry;
 
     mapping(address => uint256) public balanceOf;
     mapping(address => uint256) public lockedOf;
@@ -51,6 +60,7 @@ contract SLAEscrow is Ownable2Step, ReentrancyGuardTransient {
     event Deposited(address indexed provider, uint256 amount);
     event Withdrawn(address indexed account, address indexed to, uint256 amount);
     event ProtocolFeeUpdated(uint256 oldFee, uint256 newFee);
+    event WatcherRegistryUpdated(address indexed oldRegistry, address indexed newRegistry);
     event CommitCreated(
         uint256 indexed commitId,
         uint256 indexed offerId,
@@ -60,8 +70,8 @@ contract SLAEscrow is Ownable2Step, ReentrancyGuardTransient {
         uint256 feePaid,
         uint256 collateral,
         uint256 slaBlocks,
-        uint256 protocolFee,
-        uint256 deadline
+        uint256 acceptDeadline,
+        uint256 protocolFee
     );
     event CommitAccepted(uint256 indexed commitId, address indexed provider, uint256 deadline);
     event Settled(uint256 indexed commitId, uint256 inclusionBlock, uint256 providerAmount);
@@ -69,15 +79,15 @@ contract SLAEscrow is Ownable2Step, ReentrancyGuardTransient {
     event Cancelled(uint256 indexed commitId, address indexed caller);
 
     error ZeroDeposit();
-    error ZeroBalance();
-    error ZeroAddress(string param);
+    error ZeroAmount();
+    error ZeroAddress(AddressParam param);
     error InvalidProtocolFee(uint256 fee);
     error InsufficientIdle(uint256 requested, uint256 available);
     error OfferInactive(uint256 offerId);
     error WrongFee(uint256 sent, uint256 required);
     error InsufficientCollateral(uint256 required, uint256 available);
     error NotProvider(uint256 commitId, address caller);
-    error NotWatcher(address caller);
+    error NotWatcherRegistry(address caller);
     error Unauthorized(uint256 commitId, address caller);
     error InvalidCommitStatus(uint256 commitId, CommitStatus status);
     error InclusionBeforeAccept(uint256 commitId, uint256 acceptedBlock, uint256 inclusionBlock);
@@ -86,16 +96,19 @@ contract SLAEscrow is Ownable2Step, ReentrancyGuardTransient {
     error DeadlineNotReached(uint256 commitId, uint256 deadline, uint256 current);
     error UserOpUnavailable(bytes32 userOpHash, UserOpHashStatus status);
     error InvalidUserOpHash();
+    error InvalidAcceptWindow(uint256 value, uint256 min, uint256 max);
     error SelfCommitForbidden(address provider);
     error CommitNotFound(uint256 commitId);
-    error DeadlineReached(uint256 commitId, uint256 deadline, uint256 current);
+    error AcceptDeadlineReached(uint256 commitId, uint256 acceptDeadline, uint256 current);
 
-    constructor(address registry_, address watcher_, address owner_) Ownable(owner_) {
-        if (registry_ == address(0)) revert ZeroAddress("registry");
-        if (watcher_ == address(0) || watcher_ == address(this)) revert ZeroAddress("watcher");
+    constructor(address registry_, address watcherRegistry_, address owner_) Ownable(owner_) {
+        if (registry_ == address(0)) revert ZeroAddress(AddressParam.Registry);
+        if (watcherRegistry_ == address(0) || watcherRegistry_ == address(this)) {
+            revert ZeroAddress(AddressParam.WatcherRegistry);
+        }
 
         registry = OfferRegistry(registry_);
-        watcher = watcher_;
+        watcherRegistry = WatcherRegistry(watcherRegistry_);
     }
 
     function setProtocolFee(uint256 newFee) external onlyOwner {
@@ -105,6 +118,17 @@ contract SLAEscrow is Ownable2Step, ReentrancyGuardTransient {
         protocolFee = newFee;
 
         emit ProtocolFeeUpdated(oldFee, newFee);
+    }
+
+    function setWatcherRegistry(address newWatcherRegistry) external onlyOwner {
+        if (newWatcherRegistry == address(0) || newWatcherRegistry == address(this)) {
+            revert ZeroAddress(AddressParam.WatcherRegistry);
+        }
+
+        address oldRegistry = address(watcherRegistry);
+        watcherRegistry = WatcherRegistry(newWatcherRegistry);
+
+        emit WatcherRegistryUpdated(oldRegistry, newWatcherRegistry);
     }
 
     function deposit() external payable {
@@ -120,12 +144,12 @@ contract SLAEscrow is Ownable2Step, ReentrancyGuardTransient {
     }
 
     function withdrawTo(address payable to, uint256 amount) external nonReentrant {
-        if (to == address(0)) revert ZeroAddress("to");
+        if (to == address(0)) revert ZeroAddress(AddressParam.To);
         _withdrawTo(to, amount);
     }
 
     function _withdrawTo(address payable to, uint256 amount) internal {
-        if (amount == 0) revert ZeroBalance();
+        if (amount == 0) revert ZeroAmount();
 
         uint256 idle = balanceOf[msg.sender] - lockedOf[msg.sender];
         if (amount > idle) revert InsufficientIdle(amount, idle);
@@ -136,7 +160,11 @@ contract SLAEscrow is Ownable2Step, ReentrancyGuardTransient {
         to.sendValue(amount);
     }
 
-    function commit(uint256 offerId, bytes32 userOpHash) external payable returns (uint256 commitId) {
+    function commit(uint256 offerId, bytes32 userOpHash, uint256 acceptWindowBlocks)
+        external
+        payable
+        returns (uint256 commitId)
+    {
         if (userOpHash == bytes32(0)) revert InvalidUserOpHash();
         UserOpHashStatus status = userOpHashStatus[userOpHash];
         if (status != UserOpHashStatus.None) revert UserOpUnavailable(userOpHash, status);
@@ -144,6 +172,9 @@ contract SLAEscrow is Ownable2Step, ReentrancyGuardTransient {
         OfferRegistry.Offer memory offer = registry.getOffer(offerId);
         if (!registry.isActive(offerId)) revert OfferInactive(offerId);
         if (msg.sender == offer.provider) revert SelfCommitForbidden(offer.provider);
+        if (acceptWindowBlocks == 0 || acceptWindowBlocks > MAX_ACCEPT_WINDOW_BLOCKS) {
+            revert InvalidAcceptWindow(acceptWindowBlocks, 1, MAX_ACCEPT_WINDOW_BLOCKS);
+        }
 
         uint256 required = offer.feePerOp + protocolFee;
         if (msg.value != required) revert WrongFee(msg.value, required);
@@ -151,7 +182,7 @@ contract SLAEscrow is Ownable2Step, ReentrancyGuardTransient {
         userOpHashStatus[userOpHash] = UserOpHashStatus.Active;
         commitId = nextCommitId++;
 
-        uint256 deadline = block.number + offer.slaBlocks;
+        uint256 acceptDeadline = block.number + acceptWindowBlocks;
         commits[commitId] = Commit({
             user: msg.sender,
             provider: offer.provider,
@@ -160,12 +191,13 @@ contract SLAEscrow is Ownable2Step, ReentrancyGuardTransient {
             feePaid: offer.feePerOp,
             collateral: offer.collateral,
             acceptedBlock: 0,
-            deadline: deadline,
+            acceptDeadline: acceptDeadline,
+            deadline: 0,
             slaBlocks: offer.slaBlocks,
             status: CommitStatus.Proposed
         });
 
-        balanceOf[watcher] += protocolFee;
+        balanceOf[watcherRegistry.feeRecipient()] += protocolFee;
 
         emit CommitCreated(
             commitId,
@@ -176,8 +208,8 @@ contract SLAEscrow is Ownable2Step, ReentrancyGuardTransient {
             offer.feePerOp,
             offer.collateral,
             offer.slaBlocks,
-            protocolFee,
-            deadline
+            acceptDeadline,
+            protocolFee
         );
     }
 
@@ -187,13 +219,16 @@ contract SLAEscrow is Ownable2Step, ReentrancyGuardTransient {
         if (c.user == address(0)) revert CommitNotFound(commitId);
         if (c.status != CommitStatus.Proposed) revert InvalidCommitStatus(commitId, c.status);
         if (msg.sender != c.provider) revert NotProvider(commitId, msg.sender);
-        if (block.number >= c.deadline) revert DeadlineReached(commitId, c.deadline, block.number);
+        if (block.number > c.acceptDeadline) {
+            revert AcceptDeadlineReached(commitId, c.acceptDeadline, block.number);
+        }
 
         uint256 idle = balanceOf[msg.sender] - lockedOf[msg.sender];
         if (idle < c.collateral) revert InsufficientCollateral(c.collateral, idle);
 
         c.status = CommitStatus.Active;
         c.acceptedBlock = block.number;
+        c.deadline = block.number + c.slaBlocks;
         lockedOf[msg.sender] += c.collateral;
 
         emit CommitAccepted(commitId, msg.sender, c.deadline);
@@ -205,9 +240,12 @@ contract SLAEscrow is Ownable2Step, ReentrancyGuardTransient {
         if (c.user == address(0)) revert CommitNotFound(commitId);
         if (c.status != CommitStatus.Proposed) revert InvalidCommitStatus(commitId, c.status);
 
-        bool beforeDeadline = block.number < c.deadline;
-        if (beforeDeadline && msg.sender != c.user) revert Unauthorized(commitId, msg.sender);
-        if (!beforeDeadline && msg.sender != c.user && msg.sender != c.provider && msg.sender != watcher) {
+        bool acceptWindowOpen = block.number <= c.acceptDeadline;
+        if (acceptWindowOpen && msg.sender != c.user) revert Unauthorized(commitId, msg.sender);
+        if (
+            !acceptWindowOpen && msg.sender != c.user && msg.sender != c.provider
+                && msg.sender != address(watcherRegistry)
+        ) {
             revert Unauthorized(commitId, msg.sender);
         }
 
@@ -219,7 +257,7 @@ contract SLAEscrow is Ownable2Step, ReentrancyGuardTransient {
     }
 
     function settle(uint256 commitId, uint256 inclusionBlock) external {
-        if (msg.sender != watcher) revert NotWatcher(msg.sender);
+        if (msg.sender != address(watcherRegistry)) revert NotWatcherRegistry(msg.sender);
 
         Commit storage c = commits[commitId];
 
@@ -238,7 +276,7 @@ contract SLAEscrow is Ownable2Step, ReentrancyGuardTransient {
     }
 
     function refund(uint256 commitId) external {
-        if (msg.sender != watcher) revert NotWatcher(msg.sender);
+        if (msg.sender != address(watcherRegistry)) revert NotWatcherRegistry(msg.sender);
 
         Commit storage c = commits[commitId];
 
