@@ -18,20 +18,29 @@ jobs:
           submodules: recursive
 
       - name: Install Foundry
-        run: |
-          set -eux
-          curl -L https://foundry.paradigm.xyz | bash
-          "$HOME/.foundry/bin/foundryup"
-          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
 
       - name: Check formatting
-        run: forge fmt --check
+        run: make fmt
 
       - name: Build
-        run: forge build --sizes
+        run: make build
 
       - name: Test
-        run: forge test
+        run: make test
 
       - name: Coverage
-        run: forge coverage
+        run: make coverage
+
+      - name: Slither
+        uses: crytic/slither-action@v0.4.2
+        with:
+          slither-args: --compile-force-framework foundry --filter-paths 'lib/'
+          fail-on: low
+
+      - name: Aderyn Check
+        uses: Cyfrin/aderyn-ci@v0
+        with:
+          fail-on: low
