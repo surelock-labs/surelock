@@ -8,6 +8,16 @@ SureLock separates three things that are easy to confuse:
 
 Balances are internal credits. Providers, clients, and the fee recipient withdraw credited funds explicitly.
 
+## Reference
+
+| From | Action | To |
+|---|---|---|
+| none | `commit` | `Proposed` |
+| `Proposed` | `accept` | `Active` |
+| `Proposed` | `cancel` | `Cancelled` |
+| `Active` | `settle` | `Settled` |
+| `Active` | `refund` | `Refunded` |
+
 ```mermaid
 sequenceDiagram
     title Provider lifecycle
