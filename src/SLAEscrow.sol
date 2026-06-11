@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.35;
 
+import "./ISLAEscrow.sol";
 import "./OfferRegistry.sol";
 import "./WatcherRegistry.sol";
 import "@openzeppelin/contracts/access/Ownable2Step.sol";
 import "@openzeppelin/contracts/utils/Address.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 
-contract SLAEscrow is Ownable2Step, ReentrancyGuardTransient {
+contract SLAEscrow is ISLAEscrow, Ownable2Step, ReentrancyGuardTransient {
     using Address for address payable;
 
     uint256 public constant MAX_PROTOCOL_FEE = 0.001 ether;
