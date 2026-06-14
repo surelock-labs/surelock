@@ -8,6 +8,8 @@ SureLock separates three things that are easy to confuse:
 
 Balances are internal credits. Providers, clients, and the fee recipient withdraw credited funds explicitly.
 
+Offers and commitments live in the same `SureLock` contract. `WatcherRegistry` only authorizes watcher accounts and forwards resolution calls.
+
 ## Reference
 
 | From | Action | To |
@@ -22,53 +24,51 @@ Balances are internal credits. Providers, clients, and the fee recipient withdra
 sequenceDiagram
     title Provider lifecycle
     actor Provider
-    participant OfferRegistry
-    participant SLAEscrow
+    participant SureLock
 
-    Provider->>OfferRegistry: register(feePerOp, collateral, slaBlocks, lifetime)
-    Provider->>SLAEscrow: deposit collateral
-    Note over SLAEscrow: A client commit creates pending work
-    Provider->>SLAEscrow: accept(commitId)
-    SLAEscrow-->>SLAEscrow: lock collateral
-    Note over SLAEscrow: Success credits feePerOp and unlocks collateral
-    Note over SLAEscrow: SLA miss slashes collateral to the client
-    Provider->>OfferRegistry: renew(offerId)
-    Provider->>OfferRegistry: deactivate(offerId)
-    Provider->>SLAEscrow: withdraw idle balance
+    Provider->>SureLock: register(feePerOp, collateral, slaBlocks, lifetime)
+    Provider->>SureLock: deposit collateral
+    Note over SureLock: A client commit creates pending work
+    Provider->>SureLock: accept(commitId)
+    SureLock-->>SureLock: lock collateral
+    Note over SureLock: Success credits feePerOp and unlocks collateral
+    Note over SureLock: SLA miss slashes collateral to the client
+    Provider->>SureLock: renew(offerId)
+    Provider->>SureLock: deactivate(offerId)
+    Provider->>SureLock: withdraw idle balance
 ```
 
 ```mermaid
 sequenceDiagram
     title Client lifecycle
     actor Client
-    participant OfferRegistry
-    participant SLAEscrow
+    participant SureLock
 
-    Client->>OfferRegistry: read active offers
-    Client->>SLAEscrow: commit(offerId, userOpHash, acceptWindowBlocks)
-    Note over SLAEscrow: Happy path credits provider feePerOp
-    Note over SLAEscrow: SLA miss credits client feePerOp + collateral
-    Note over SLAEscrow: No-accept cancel credits client feePerOp
-    Client->>SLAEscrow: withdraw credited balance
+    Client->>SureLock: read active offers
+    Client->>SureLock: commit(offerId, userOpHash, acceptWindowBlocks)
+    Note over SureLock: Happy path credits provider feePerOp
+    Note over SureLock: SLA miss credits client feePerOp + collateral
+    Note over SureLock: No-accept cancel credits client feePerOp
+    Client->>SureLock: withdraw credited balance
 ```
 
 ```mermaid
 sequenceDiagram
     title Happy path: accepted and included before deadline
     actor Provider
-    participant SLAEscrow
+    participant SureLock
     participant WatcherRegistry
     participant EntryPoint
     actor Watcher
 
-    Provider->>SLAEscrow: accept(commitId)
-    SLAEscrow-->>SLAEscrow: lock collateral
+    Provider->>SureLock: accept(commitId)
+    SureLock-->>SureLock: lock collateral
     Provider->>EntryPoint: include UserOperation
     EntryPoint-->>Watcher: UserOperationEvent(userOpHash)
-    Watcher->>WatcherRegistry: settle(escrow, commitId, inclusionBlock)
-    WatcherRegistry->>SLAEscrow: settle(commitId, inclusionBlock)
-    SLAEscrow-->>Provider: credit feePerOp
-    SLAEscrow-->>SLAEscrow: unlock collateral
+    Watcher->>WatcherRegistry: settle(surelock, commitId, inclusionBlock)
+    WatcherRegistry->>SureLock: settle(commitId, inclusionBlock)
+    SureLock-->>Provider: credit feePerOp
+    SureLock-->>SureLock: unlock collateral
 ```
 
 ```mermaid
@@ -76,32 +76,32 @@ sequenceDiagram
     title SLA miss path: accepted but not included before deadline
     actor Client
     actor Provider
-    participant SLAEscrow
+    participant SureLock
     participant WatcherRegistry
     actor Watcher
 
-    Provider->>SLAEscrow: accept(commitId)
-    SLAEscrow-->>SLAEscrow: lock collateral
-    Watcher->>WatcherRegistry: refund(escrow, commitId)
-    WatcherRegistry->>SLAEscrow: refund(commitId)
-    SLAEscrow-->>Client: credit feePerOp + collateral
+    Provider->>SureLock: accept(commitId)
+    SureLock-->>SureLock: lock collateral
+    Watcher->>WatcherRegistry: refund(surelock, commitId)
+    WatcherRegistry->>SureLock: refund(commitId)
+    SureLock-->>Client: credit feePerOp + collateral
 ```
 
 ```mermaid
 sequenceDiagram
     title No-accept path: provider never accepts
     actor Client
-    participant SLAEscrow
+    participant SureLock
     participant WatcherRegistry
     actor Watcher
 
     alt client cancels during accept window
-        Client->>SLAEscrow: cancel(commitId)
+        Client->>SureLock: cancel(commitId)
     else accept window expired
-        Watcher->>WatcherRegistry: cancel(escrow, commitId)
-        WatcherRegistry->>SLAEscrow: cancel(commitId)
+        Watcher->>WatcherRegistry: cancel(surelock, commitId)
+        WatcherRegistry->>SureLock: cancel(commitId)
     end
 
-    SLAEscrow-->>Client: credit feePerOp
-    SLAEscrow-->>SLAEscrow: release userOpHash
+    SureLock-->>Client: credit feePerOp
+    SureLock-->>SureLock: release userOpHash
 ```
