@@ -1,0 +1,6 @@
+version = 1
+root = "."
+src = "src"
+
+[detectors]
+exclude = ["centralization-risk"]
