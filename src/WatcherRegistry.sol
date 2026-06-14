@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: BUSL-1.1
-pragma solidity ^0.8.35;
+pragma solidity 0.8.35;
 
-import "./ISLAEscrow.sol";
-import "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {ISureLock} from "./ISureLock.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 
 contract WatcherRegistry is Ownable2Step {
     enum AddressParam {
         FeeRecipient,
         Watcher,
-        Escrow
+        SureLock
     }
 
     address public feeRecipient;
@@ -47,19 +48,19 @@ contract WatcherRegistry is Ownable2Step {
         emit WatcherUpdated(watcher, allowed);
     }
 
-    function cancel(ISLAEscrow escrow, uint256 commitId) external onlyWatcher {
-        _requireEscrow(address(escrow));
-        escrow.cancel(commitId);
+    function cancel(ISureLock surelock, uint256 commitId) external onlyWatcher {
+        _requireSureLock(address(surelock));
+        surelock.cancel(commitId);
     }
 
-    function settle(ISLAEscrow escrow, uint256 commitId, uint256 inclusionBlock) external onlyWatcher {
-        _requireEscrow(address(escrow));
-        escrow.settle(commitId, inclusionBlock);
+    function settle(ISureLock surelock, uint256 commitId, uint256 inclusionBlock) external onlyWatcher {
+        _requireSureLock(address(surelock));
+        surelock.settle(commitId, inclusionBlock);
     }
 
-    function refund(ISLAEscrow escrow, uint256 commitId) external onlyWatcher {
-        _requireEscrow(address(escrow));
-        escrow.refund(commitId);
+    function refund(ISureLock surelock, uint256 commitId) external onlyWatcher {
+        _requireSureLock(address(surelock));
+        surelock.refund(commitId);
     }
 
     modifier onlyWatcher() {
@@ -67,7 +68,7 @@ contract WatcherRegistry is Ownable2Step {
         _;
     }
 
-    function _requireEscrow(address escrow) private pure {
-        if (escrow == address(0)) revert ZeroAddress(AddressParam.Escrow);
+    function _requireSureLock(address surelock) private pure {
+        if (surelock == address(0)) revert ZeroAddress(AddressParam.SureLock);
     }
 }

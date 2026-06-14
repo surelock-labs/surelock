@@ -1,15 +1,21 @@
 // SPDX-License-Identifier: BUSL-1.1
-pragma solidity ^0.8.35;
+pragma solidity 0.8.35;
 
-import "./ISLAEscrow.sol";
-import "./OfferRegistry.sol";
-import "./WatcherRegistry.sol";
-import "@openzeppelin/contracts/access/Ownable2Step.sol";
-import "@openzeppelin/contracts/utils/Address.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
+import {ISureLock} from "./ISureLock.sol";
+import {WatcherRegistry} from "./WatcherRegistry.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {Address} from "@openzeppelin/contracts/utils/Address.sol";
+import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 
-contract SLAEscrow is ISLAEscrow, Ownable2Step, ReentrancyGuardTransient {
+contract SureLock is ISureLock, Ownable2Step, ReentrancyGuardTransient {
     using Address for address payable;
+
+    uint256 public constant MIN_SLA_BLOCKS = 1;
+    uint256 public constant MAX_SLA_BLOCKS = 1_000;
+    uint256 public constant MIN_LIFETIME = 1e4;
+    uint256 public constant MAX_LIFETIME = 1e6;
+    uint256 public constant MAX_PAGE_SIZE = 100;
 
     uint256 public constant MAX_PROTOCOL_FEE = 0.001 ether;
     uint256 public constant MAX_ACCEPT_WINDOW_BLOCKS = 1_000;
@@ -29,9 +35,29 @@ contract SLAEscrow is ISLAEscrow, Ownable2Step, ReentrancyGuardTransient {
     }
 
     enum AddressParam {
-        Registry,
         WatcherRegistry,
         To
+    }
+
+    struct Offer {
+        address provider;
+        bool disabled;
+        uint256 feePerOp;
+        uint256 collateral;
+        uint256 slaBlocks;
+        uint256 expiresAt;
+    }
+
+    struct OfferView {
+        uint256 offerId;
+        address provider;
+        uint256 feePerOp;
+        uint256 collateral;
+        uint256 slaBlocks;
+        uint256 expiresAt;
+        bool exists;
+        bool disabled;
+        bool active;
     }
 
     struct Commit {
@@ -48,17 +74,19 @@ contract SLAEscrow is ISLAEscrow, Ownable2Step, ReentrancyGuardTransient {
         CommitStatus status;
     }
 
+    uint256 public nextOfferId = 1;
     uint256 public protocolFee;
     uint256 public nextCommitId = 1;
-    OfferRegistry public immutable registry;
+
     WatcherRegistry public watcherRegistry;
 
+    mapping(uint256 => Offer) internal offers;
     mapping(address => uint256) public balanceOf;
     mapping(address => uint256) public lockedOf;
     mapping(uint256 => Commit) internal commits;
     mapping(bytes32 => UserOpHashStatus) public userOpHashStatus;
 
-    event Deposited(address indexed provider, uint256 amount);
+    event Deposited(address indexed account, uint256 amount);
     event Withdrawn(address indexed account, address indexed to, uint256 amount);
     event ProtocolFeeUpdated(uint256 oldFee, uint256 newFee);
     event WatcherRegistryUpdated(address indexed oldRegistry, address indexed newRegistry);
@@ -78,8 +106,17 @@ contract SLAEscrow is ISLAEscrow, Ownable2Step, ReentrancyGuardTransient {
     event Settled(uint256 indexed commitId, uint256 inclusionBlock, uint256 providerAmount);
     event Refunded(uint256 indexed commitId, uint256 userAmount);
     event Cancelled(uint256 indexed commitId, address indexed caller);
+    event OfferRegistered(
+        uint256 indexed offerId,
+        address indexed provider,
+        uint256 feePerOp,
+        uint256 collateral,
+        uint256 slaBlocks,
+        uint256 expiresAt
+    );
+    event OfferDeactivated(uint256 indexed offerId, address indexed provider);
+    event OfferRenewed(uint256 indexed offerId, address indexed provider, uint256 expiresAt);
 
-    error ZeroDeposit();
     error ZeroAmount();
     error ZeroAddress(AddressParam param);
     error InvalidProtocolFee(uint256 fee);
@@ -101,14 +138,19 @@ contract SLAEscrow is ISLAEscrow, Ownable2Step, ReentrancyGuardTransient {
     error SelfCommitForbidden(address provider);
     error CommitNotFound(uint256 commitId);
     error AcceptDeadlineReached(uint256 commitId, uint256 acceptDeadline, uint256 current);
+    error OfferNotFound(uint256 offerId);
+    error NotOfferOwner(uint256 offerId, address caller);
+    error InvalidSlaBlocks(uint256 value, uint256 min, uint256 max);
+    error InvalidFee(uint256 value);
+    error InvalidCollateral(uint256 collateral, uint256 feePerOp);
+    error InvalidLifetime(uint256 value, uint256 min, uint256 max);
+    error InvalidOfferPage(uint256 startOfferId, uint256 count, uint256 maxPageSize);
 
-    constructor(address registry_, address watcherRegistry_, address owner_) Ownable(owner_) {
-        if (registry_ == address(0)) revert ZeroAddress(AddressParam.Registry);
+    constructor(address watcherRegistry_, address owner_) Ownable(owner_) {
         if (watcherRegistry_ == address(0) || watcherRegistry_ == address(this)) {
             revert ZeroAddress(AddressParam.WatcherRegistry);
         }
 
-        registry = OfferRegistry(registry_);
         watcherRegistry = WatcherRegistry(watcherRegistry_);
     }
 
@@ -132,8 +174,105 @@ contract SLAEscrow is ISLAEscrow, Ownable2Step, ReentrancyGuardTransient {
         emit WatcherRegistryUpdated(oldRegistry, newWatcherRegistry);
     }
 
+    function register(uint256 feePerOp, uint256 slaBlocks, uint256 collateral, uint256 lifetime)
+        external
+        returns (uint256 offerId)
+    {
+        if (slaBlocks < MIN_SLA_BLOCKS || slaBlocks > MAX_SLA_BLOCKS) {
+            revert InvalidSlaBlocks(slaBlocks, MIN_SLA_BLOCKS, MAX_SLA_BLOCKS);
+        }
+        if (feePerOp == 0) revert InvalidFee(feePerOp);
+        if (collateral <= feePerOp) revert InvalidCollateral(collateral, feePerOp);
+        if (lifetime < MIN_LIFETIME || lifetime > MAX_LIFETIME) {
+            revert InvalidLifetime(lifetime, MIN_LIFETIME, MAX_LIFETIME);
+        }
+
+        offerId = nextOfferId++;
+
+        offers[offerId] = Offer({
+            provider: msg.sender,
+            disabled: false,
+            feePerOp: feePerOp,
+            collateral: collateral,
+            slaBlocks: slaBlocks,
+            expiresAt: block.number + lifetime
+        });
+
+        emit OfferRegistered(offerId, msg.sender, feePerOp, collateral, slaBlocks, block.number + lifetime);
+    }
+
+    function deactivate(uint256 offerId) external {
+        Offer storage offer = offers[offerId];
+        if (offer.provider == address(0)) revert OfferNotFound(offerId);
+        if (offer.provider != msg.sender) revert NotOfferOwner(offerId, msg.sender);
+
+        offer.disabled = true;
+
+        emit OfferDeactivated(offerId, msg.sender);
+    }
+
+    function renew(uint256 offerId, uint256 lifetime) external {
+        Offer storage offer = offers[offerId];
+        if (offer.provider != msg.sender) revert NotOfferOwner(offerId, msg.sender);
+        if (lifetime < MIN_LIFETIME || lifetime > MAX_LIFETIME) {
+            revert InvalidLifetime(lifetime, MIN_LIFETIME, MAX_LIFETIME);
+        }
+
+        offer.expiresAt = block.number + lifetime;
+        offer.disabled = false;
+
+        emit OfferRenewed(offerId, msg.sender, offer.expiresAt);
+    }
+
+    function isActive(uint256 offerId) external view returns (bool) {
+        return _isActive(offers[offerId]);
+    }
+
+    function exists(uint256 offerId) external view returns (bool) {
+        return offers[offerId].provider != address(0);
+    }
+
+    function offerCount() external view returns (uint256) {
+        return nextOfferId - 1;
+    }
+
+    function getOfferPage(uint256 startOfferId, uint256 count) external view returns (OfferView[] memory page) {
+        if (startOfferId == 0 || count > MAX_PAGE_SIZE) {
+            revert InvalidOfferPage(startOfferId, count, MAX_PAGE_SIZE);
+        }
+
+        uint256 endExclusive = startOfferId + count;
+        if (endExclusive > nextOfferId) endExclusive = nextOfferId;
+        if (startOfferId >= endExclusive) return new OfferView[](0);
+
+        page = new OfferView[](endExclusive - startOfferId);
+        for (uint256 i = 0; i < page.length; i++) {
+            uint256 offerId = startOfferId + i;
+            Offer storage offer = offers[offerId];
+            bool offerExists = offer.provider != address(0);
+            page[i] = OfferView({
+                offerId: offerId,
+                provider: offer.provider,
+                feePerOp: offer.feePerOp,
+                collateral: offer.collateral,
+                slaBlocks: offer.slaBlocks,
+                expiresAt: offer.expiresAt,
+                exists: offerExists,
+                disabled: offer.disabled,
+                active: _isActive(offer)
+            });
+        }
+    }
+
+    function getOffer(uint256 offerId) external view returns (Offer memory) {
+        Offer storage offer = offers[offerId];
+        if (offer.provider == address(0)) revert OfferNotFound(offerId);
+
+        return offer;
+    }
+
     function deposit() external payable {
-        if (msg.value == 0) revert ZeroDeposit();
+        if (msg.value == 0) revert ZeroAmount();
 
         balanceOf[msg.sender] += msg.value;
 
@@ -145,11 +284,11 @@ contract SLAEscrow is ISLAEscrow, Ownable2Step, ReentrancyGuardTransient {
     }
 
     function withdrawTo(address payable to, uint256 amount) external nonReentrant {
-        if (to == address(0)) revert ZeroAddress(AddressParam.To);
         _withdrawTo(to, amount);
     }
 
     function _withdrawTo(address payable to, uint256 amount) internal {
+        if (to == address(0)) revert ZeroAddress(AddressParam.To);
         if (amount == 0) revert ZeroAmount();
 
         uint256 idle = balanceOf[msg.sender] - lockedOf[msg.sender];
@@ -170,8 +309,9 @@ contract SLAEscrow is ISLAEscrow, Ownable2Step, ReentrancyGuardTransient {
         UserOpHashStatus status = userOpHashStatus[userOpHash];
         if (status != UserOpHashStatus.None) revert UserOpUnavailable(userOpHash, status);
 
-        OfferRegistry.Offer memory offer = registry.getOffer(offerId);
-        if (!registry.isActive(offerId)) revert OfferInactive(offerId);
+        Offer storage offer = offers[offerId];
+        if (offer.provider == address(0)) revert OfferNotFound(offerId);
+        if (!_isActive(offer)) revert OfferInactive(offerId);
         if (msg.sender == offer.provider) revert SelfCommitForbidden(offer.provider);
         if (acceptWindowBlocks == 0 || acceptWindowBlocks > MAX_ACCEPT_WINDOW_BLOCKS) {
             revert InvalidAcceptWindow(acceptWindowBlocks, 1, MAX_ACCEPT_WINDOW_BLOCKS);
@@ -244,8 +384,10 @@ contract SLAEscrow is ISLAEscrow, Ownable2Step, ReentrancyGuardTransient {
         bool acceptWindowOpen = block.number <= c.acceptDeadline;
         if (acceptWindowOpen && msg.sender != c.user) revert Unauthorized(commitId, msg.sender);
         if (
-            !acceptWindowOpen && msg.sender != c.user && msg.sender != c.provider
-                && msg.sender != address(watcherRegistry)
+            !acceptWindowOpen &&
+            msg.sender != c.user &&
+            msg.sender != c.provider &&
+            msg.sender != address(watcherRegistry)
         ) {
             revert Unauthorized(commitId, msg.sender);
         }
@@ -296,11 +438,15 @@ contract SLAEscrow is ISLAEscrow, Ownable2Step, ReentrancyGuardTransient {
         emit Refunded(commitId, userAmount);
     }
 
-    function idleBalance(address provider) public view returns (uint256) {
+    function idleBalance(address provider) external view returns (uint256) {
         return balanceOf[provider] - lockedOf[provider];
     }
 
     function getCommit(uint256 commitId) external view returns (Commit memory) {
         return commits[commitId];
+    }
+
+    function _isActive(Offer storage offer) internal view returns (bool) {
+        return offer.provider != address(0) && !offer.disabled && block.number <= offer.expiresAt;
     }
 }

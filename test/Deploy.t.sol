@@ -3,8 +3,7 @@ pragma solidity ^0.8.35;
 
 import {Test} from "forge-std/Test.sol";
 import {Deploy} from "script/Deploy.s.sol";
-import {OfferRegistry} from "src/OfferRegistry.sol";
-import {SLAEscrow} from "src/SLAEscrow.sol";
+import {SureLock} from "src/SureLock.sol";
 import {WatcherRegistry} from "src/WatcherRegistry.sol";
 
 contract DeployTest is Test {
@@ -21,21 +20,19 @@ contract DeployTest is Test {
     function testDeployScriptWiresContracts() public {
         Deploy deploy = new Deploy();
 
-        (OfferRegistry registry, WatcherRegistry watcherRegistry, SLAEscrow escrow) = deploy.run();
+        (WatcherRegistry watcherRegistry, SureLock surelock) = deploy.run();
 
-        assertTrue(address(registry) != address(0));
         assertTrue(address(watcherRegistry) != address(0));
-        assertTrue(address(escrow) != address(0));
+        assertTrue(address(surelock) != address(0));
 
-        assertEq(address(escrow.registry()), address(registry));
-        assertEq(address(escrow.watcherRegistry()), address(watcherRegistry));
-        assertEq(escrow.owner(), owner);
+        assertEq(address(surelock.watcherRegistry()), address(watcherRegistry));
+        assertEq(surelock.owner(), owner);
 
         assertEq(watcherRegistry.owner(), owner);
         assertEq(watcherRegistry.feeRecipient(), feeRecipient);
         assertTrue(watcherRegistry.isWatcher(watcher));
 
-        assertEq(registry.nextOfferId(), 1);
-        assertEq(escrow.nextCommitId(), 1);
+        assertEq(surelock.nextOfferId(), 1);
+        assertEq(surelock.nextCommitId(), 1);
     }
 }

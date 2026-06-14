@@ -2,7 +2,8 @@
 pragma solidity ^0.8.35;
 
 import {Test} from "forge-std/Test.sol";
-import {ISLAEscrow, WatcherRegistry} from "src/WatcherRegistry.sol";
+import {ISureLock} from "src/ISureLock.sol";
+import {WatcherRegistry} from "src/WatcherRegistry.sol";
 
 contract WatcherRegistryTest is Test {
     WatcherRegistry registry;
@@ -50,6 +51,6 @@ contract WatcherRegistryTest is Test {
     function testNonWatcherCannotForwardResolution() public {
         vm.prank(stranger);
         vm.expectRevert(abi.encodeWithSelector(WatcherRegistry.NotWatcher.selector, stranger));
-        registry.refund(ISLAEscrow(address(0xBEEF)), 1);
+        registry.refund(ISureLock(address(0xBEEF)), 1);
     }
 }
