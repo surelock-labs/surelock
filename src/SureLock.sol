@@ -384,10 +384,8 @@ contract SureLock is ISureLock, Ownable2Step, ReentrancyGuardTransient {
         bool acceptWindowOpen = block.number <= c.acceptDeadline;
         if (acceptWindowOpen && msg.sender != c.user) revert Unauthorized(commitId, msg.sender);
         if (
-            !acceptWindowOpen &&
-            msg.sender != c.user &&
-            msg.sender != c.provider &&
-            msg.sender != address(watcherRegistry)
+            !acceptWindowOpen && msg.sender != c.user && msg.sender != c.provider
+                && msg.sender != address(watcherRegistry)
         ) {
             revert Unauthorized(commitId, msg.sender);
         }

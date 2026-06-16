@@ -216,7 +216,6 @@ contract SureLockInvariantHandler is Test {
         if (c.status != SureLock.CommitStatus.Active) return;
         if (block.number <= c.deadline) vm.roll(c.deadline + 1);
 
-
         vm.prank(watcher);
         try registry.refund(ISureLock(address(surelock)), commitId) {
             _recordTerminal(commitId);
