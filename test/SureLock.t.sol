@@ -419,6 +419,41 @@ contract SureLockTest is Test {
         assertEq(surelock.balanceOf(client), FEE);
     }
 
+    function testOnlyClientCanCancelDuringAcceptWindow() public {
+        uint256 commitId = _commit(bytes32(uint256(33)), FEE);
+
+        vm.prank(provider);
+        vm.expectRevert(abi.encodeWithSelector(SureLock.Unauthorized.selector, commitId, provider));
+        surelock.cancel(commitId);
+
+        vm.prank(watcher);
+        vm.expectRevert(abi.encodeWithSelector(SureLock.Unauthorized.selector, commitId, address(watcherRegistry)));
+        watcherRegistry.cancel(ISureLock(address(surelock)), commitId);
+    }
+
+    function testProviderCanCancelExpiredProposedCommitWithoutSlash() public {
+        _deposit(COLLATERAL);
+        uint256 commitId = _expiredProposedCommit(bytes32(uint256(34)));
+
+        vm.prank(provider);
+        surelock.cancel(commitId);
+
+        _assertStatus(commitId, SureLock.CommitStatus.Cancelled);
+        assertEq(surelock.lockedOf(provider), 0);
+        assertEq(surelock.balanceOf(provider), COLLATERAL);
+        assertEq(surelock.balanceOf(client), FEE);
+    }
+
+    function testStrangerCannotCancelExpiredProposedCommit() public {
+        uint256 commitId = _expiredProposedCommit(bytes32(uint256(35)));
+
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(SureLock.Unauthorized.selector, commitId, stranger));
+        surelock.cancel(commitId);
+
+        _assertStatus(commitId, SureLock.CommitStatus.Proposed);
+    }
+
     function testOnlyWatcherRegistryCanSettle() public {
         _deposit(COLLATERAL);
         uint256 commitId = _commit(bytes32(uint256(7)), FEE);
@@ -511,6 +546,56 @@ contract SureLockTest is Test {
         assertEq(surelock.balanceOf(provider), COLLATERAL + FEE);
     }
 
+    function testCanSettleWithInclusionAtDeadline() public {
+        uint256 commitId = _activeCommit(bytes32(uint256(27)));
+        SureLock.Commit memory c = surelock.getCommit(commitId);
+
+        vm.roll(c.deadline);
+        _watcherSettle(commitId, c.deadline);
+
+        _assertStatus(commitId, SureLock.CommitStatus.Settled);
+    }
+
+    function testCannotRefundAtDeadline() public {
+        uint256 commitId = _activeCommit(bytes32(uint256(28)));
+        SureLock.Commit memory c = surelock.getCommit(commitId);
+
+        vm.roll(c.deadline);
+
+        vm.expectRevert(abi.encodeWithSelector(SureLock.DeadlineNotReached.selector, commitId, c.deadline, c.deadline));
+        _watcherRefund(commitId);
+    }
+
+    function testActiveCommitCannotBeCancelled() public {
+        uint256 commitId = _activeCommit(bytes32(uint256(29)));
+
+        vm.prank(client);
+        vm.expectRevert(
+            abi.encodeWithSelector(SureLock.InvalidCommitStatus.selector, commitId, SureLock.CommitStatus.Active)
+        );
+        surelock.cancel(commitId);
+    }
+
+    function testSettledCommitCannotBeResolvedAgain() public {
+        uint256 commitId = _settledCommit(bytes32(uint256(30)));
+        SureLock.Commit memory c = surelock.getCommit(commitId);
+
+        _expectTerminalTransitionsRevert(commitId, SureLock.CommitStatus.Settled, c.acceptedBlock + 1);
+    }
+
+    function testRefundedCommitCannotBeResolvedAgain() public {
+        uint256 commitId = _refundedCommit(bytes32(uint256(31)));
+        SureLock.Commit memory c = surelock.getCommit(commitId);
+
+        _expectTerminalTransitionsRevert(commitId, SureLock.CommitStatus.Refunded, c.acceptedBlock + 1);
+    }
+
+    function testCancelledCommitCannotBeResolvedAgain() public {
+        uint256 commitId = _cancelledCommit(bytes32(uint256(32)));
+
+        _expectTerminalTransitionsRevert(commitId, SureLock.CommitStatus.Cancelled, block.number);
+    }
+
     function _deposit(uint256 amount) internal {
         vm.prank(provider);
         surelock.deposit{value: amount}();
@@ -534,6 +619,65 @@ contract SureLockTest is Test {
     function _watcherRefund(uint256 commitId) internal {
         vm.prank(watcher);
         watcherRegistry.refund(ISureLock(address(surelock)), commitId);
+    }
+
+    function _activeCommit(bytes32 userOpHash) internal returns (uint256 commitId) {
+        _deposit(COLLATERAL);
+        commitId = _commit(userOpHash, FEE);
+
+        vm.prank(provider);
+        surelock.accept(commitId);
+    }
+
+    function _settledCommit(bytes32 userOpHash) internal returns (uint256 commitId) {
+        commitId = _activeCommit(userOpHash);
+        SureLock.Commit memory c = surelock.getCommit(commitId);
+        uint256 inclusionBlock = c.acceptedBlock + 1;
+
+        vm.roll(inclusionBlock);
+        _watcherSettle(commitId, inclusionBlock);
+    }
+
+    function _refundedCommit(bytes32 userOpHash) internal returns (uint256 commitId) {
+        commitId = _activeCommit(userOpHash);
+        SureLock.Commit memory c = surelock.getCommit(commitId);
+
+        vm.roll(c.deadline + 1);
+        _watcherRefund(commitId);
+    }
+
+    function _cancelledCommit(bytes32 userOpHash) internal returns (uint256 commitId) {
+        commitId = _commit(userOpHash, FEE);
+
+        vm.prank(client);
+        surelock.cancel(commitId);
+    }
+
+    function _expiredProposedCommit(bytes32 userOpHash) internal returns (uint256 commitId) {
+        commitId = _commit(userOpHash, FEE);
+        SureLock.Commit memory c = surelock.getCommit(commitId);
+
+        vm.roll(c.acceptDeadline + 1);
+    }
+
+    function _expectTerminalTransitionsRevert(uint256 commitId, SureLock.CommitStatus status, uint256 inclusionBlock)
+        internal
+    {
+        bytes memory expected = abi.encodeWithSelector(SureLock.InvalidCommitStatus.selector, commitId, status);
+
+        vm.expectRevert(expected);
+        _watcherSettle(commitId, inclusionBlock);
+
+        vm.expectRevert(expected);
+        _watcherRefund(commitId);
+
+        vm.prank(client);
+        vm.expectRevert(expected);
+        surelock.cancel(commitId);
+
+        vm.prank(provider);
+        vm.expectRevert(expected);
+        surelock.accept(commitId);
     }
 
     function _assertStatus(uint256 commitId, SureLock.CommitStatus status) internal view {

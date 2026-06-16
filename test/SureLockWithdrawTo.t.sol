@@ -19,6 +19,31 @@ contract NonPayableAccount {
     }
 }
 
+contract ReentrantAccount {
+    SureLock public surelock;
+    uint256 public amount;
+    bool public reentered;
+    bool public reenterSucceeded;
+
+    function deposit(SureLock surelock_) external payable {
+        surelock_.deposit{value: msg.value}();
+    }
+
+    function withdrawWithReentry(SureLock surelock_, uint256 amount_) external {
+        surelock = surelock_;
+        amount = amount_;
+
+        surelock_.withdraw(amount_);
+    }
+
+    receive() external payable {
+        if (reentered) return;
+
+        reentered = true;
+        (reenterSucceeded,) = address(surelock).call(abi.encodeCall(SureLock.withdraw, (amount)));
+    }
+}
+
 contract SureLockWithdrawToTest is Test {
     uint256 constant AMOUNT = 1 ether;
 
@@ -57,6 +82,19 @@ contract SureLockWithdrawToTest is Test {
         assertEq(address(surelock).balance, 0);
         assertEq(address(account).balance, 0);
         assertEq(beneficiary.balance, AMOUNT);
+    }
+
+    function testWithdrawCannotBeReentered() public {
+        ReentrantAccount reentrant = new ReentrantAccount();
+        reentrant.deposit{value: AMOUNT}(surelock);
+
+        reentrant.withdrawWithReentry(surelock, AMOUNT);
+
+        assertTrue(reentrant.reentered());
+        assertFalse(reentrant.reenterSucceeded());
+        assertEq(surelock.balanceOf(address(reentrant)), 0);
+        assertEq(address(surelock).balance, 0);
+        assertEq(address(reentrant).balance, AMOUNT);
     }
 
     function testWithdrawRejectsZeroAmount() public {
