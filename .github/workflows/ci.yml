@@ -10,6 +10,9 @@ jobs:
   ci:
     runs-on: ubuntu-latest
     name: Forge
+    env:
+      FOUNDRY_INVARIANT_RUNS: 32
+      FOUNDRY_INVARIANT_DEPTH: 64
 
     steps:
       - name: Checkout
