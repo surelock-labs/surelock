@@ -1,0 +1,12 @@
+{
+  "chainId": 84532,
+  "network": "base-sepolia",
+  "contracts": {
+    "SureLock": {
+      "address": "0xee2c3fefb9c8c6dd0ace1a247cfc6642bf8ffdd8"
+    },
+    "WatcherRegistry": {
+      "address": "0xbA085De3f654779d756ef1e01b7A451B72ac5FF4"
+    }
+  }
+}
