@@ -15,6 +15,7 @@ contract SureLockInvariantHandler is Test {
     WatcherRegistry public registry;
 
     address public watcher;
+    address public entryPoint = address(0x4337);
     address[] internal providers;
     address[] internal clients;
     address[] internal balanceAccounts;
@@ -52,7 +53,7 @@ contract SureLockInvariantHandler is Test {
         }
         for (uint256 i = 0; i < providers.length; i++) {
             _deposit(providers[i], 10 ether);
-            _register(providers[i], 0.01 ether, 20, 0.03 ether, surelock.MIN_LIFETIME());
+            _register(providers[i], entryPoint, 0.01 ether, 20, 0.03 ether, surelock.MIN_LIFETIME());
         }
     }
 
@@ -82,7 +83,7 @@ contract SureLockInvariantHandler is Test {
         uint256 slaBlocks = bound(slaSeed, surelock.MIN_SLA_BLOCKS(), surelock.MAX_SLA_BLOCKS());
         uint256 collateral = feePerOp + bound(collateralSeed, 1 wei, 0.2 ether);
 
-        _register(_provider(providerSeed), feePerOp, slaBlocks, collateral, surelock.MIN_LIFETIME());
+        _register(_provider(providerSeed), entryPoint, feePerOp, slaBlocks, collateral, surelock.MIN_LIFETIME());
     }
 
     function renewOffer(uint256 offerSeed, uint256 lifetimeSeed) external {
@@ -242,11 +243,16 @@ contract SureLockInvariantHandler is Test {
         return commitIds[index];
     }
 
-    function _register(address provider, uint256 feePerOp, uint256 slaBlocks, uint256 collateral, uint256 lifetime)
-        internal
-    {
+    function _register(
+        address provider,
+        address entryPoint_,
+        uint256 feePerOp,
+        uint256 slaBlocks,
+        uint256 collateral,
+        uint256 lifetime
+    ) internal {
         vm.prank(provider);
-        try surelock.register(feePerOp, slaBlocks, collateral, lifetime) returns (uint256 offerId) {
+        try surelock.register(entryPoint_, feePerOp, slaBlocks, collateral, lifetime) returns (uint256 offerId) {
             offerIds.push(offerId);
         } catch {}
     }
@@ -419,6 +425,7 @@ contract SureLockInvariantTest is Test {
         uint256 count = handler.commitCount();
         for (uint256 i = 0; i < count; i++) {
             SureLock.Commit memory c = surelock.getCommit(handler.commitIdAt(i));
+            assertTrue(c.entryPoint != address(0), "entryPoint missing");
 
             if (c.status == SureLock.CommitStatus.Proposed || c.status == SureLock.CommitStatus.Cancelled) {
                 assertEq(c.acceptedBlock, 0, "inactive commit accepted block");

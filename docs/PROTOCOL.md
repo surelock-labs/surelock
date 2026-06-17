@@ -4,6 +4,7 @@ SureLock separates three things that are easy to confuse:
 
 - `commit()` reserves a specific `userOpHash`; provider collateral is not locked yet.
 - `accept()` is the provider's explicit consent; collateral locks and the SLA deadline starts.
+- Each offer declares one compatible EntryPoint. This is a provider capability claim used by routers and watchers, not a cryptographic proof.
 - Watchers resolve outcomes. They observe EntryPoint activity off-chain and call `settle`, `refund`, or `cancel`; the contracts enforce timing, authorization, and payout accounting.
 
 Balances are internal credits. Providers, clients, and the fee recipient withdraw credited funds explicitly.
@@ -26,7 +27,7 @@ sequenceDiagram
     actor Provider
     participant SureLock
 
-    Provider->>SureLock: register(feePerOp, collateral, slaBlocks, lifetime)
+    Provider->>SureLock: register(entryPoint, feePerOp, slaBlocks, collateral, lifetime)
     Provider->>SureLock: deposit collateral
     Note over SureLock: A client commit creates pending work
     Provider->>SureLock: accept(commitId)

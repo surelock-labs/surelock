@@ -18,6 +18,7 @@ contract SureLockTest is Test {
     address provider = address(0xCAFE);
     address client = address(0xC11E);
     address stranger = address(0xBAD);
+    address entryPoint = address(0x4337);
 
     uint256 constant FEE = 0.01 ether;
     uint256 constant COLLATERAL = 0.03 ether;
@@ -30,6 +31,7 @@ contract SureLockTest is Test {
         uint256 indexed offerId,
         address indexed user,
         address provider,
+        address entryPoint,
         bytes32 userOpHash,
         uint256 feePaid,
         uint256 collateral,
@@ -50,7 +52,7 @@ contract SureLockTest is Test {
         uint256 lifetime = surelock.MIN_LIFETIME();
 
         vm.prank(provider);
-        offerId = surelock.register(FEE, SLA_BLOCKS, COLLATERAL, lifetime);
+        offerId = surelock.register(entryPoint, FEE, SLA_BLOCKS, COLLATERAL, lifetime);
     }
 
     function testInitialCommitIdIsOne() public view {
@@ -202,6 +204,7 @@ contract SureLockTest is Test {
             offerId,
             client,
             provider,
+            entryPoint,
             userOpHash,
             FEE,
             COLLATERAL,
@@ -214,6 +217,7 @@ contract SureLockTest is Test {
         uint256 commitId = surelock.commit{value: FEE + fee}(offerId, userOpHash, ACCEPT_WINDOW_BLOCKS);
 
         SureLock.Commit memory c = surelock.getCommit(commitId);
+        assertEq(c.entryPoint, entryPoint);
         assertEq(c.acceptDeadline, block.number + ACCEPT_WINDOW_BLOCKS);
         assertEq(c.deadline, 0);
     }

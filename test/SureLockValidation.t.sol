@@ -17,6 +17,7 @@ contract SureLockValidationTest is Test {
     address provider = address(0xCAFE);
     address client = address(0xC11E);
     address stranger = address(0xBAD);
+    address entryPoint = address(0x4337);
 
     uint256 constant FEE = 0.01 ether;
     uint256 constant COLLATERAL = 0.03 ether;
@@ -90,19 +91,25 @@ contract SureLockValidationTest is Test {
             abi.encodeWithSelector(SureLock.InvalidSlaBlocks.selector, slaBlocks, minSlaBlocks, maxSlaBlocks)
         );
         vm.prank(provider);
-        surelock.register(FEE, slaBlocks, COLLATERAL, minLifetime);
+        surelock.register(entryPoint, FEE, slaBlocks, COLLATERAL, minLifetime);
+    }
+
+    function testRegisterRejectsZeroEntryPoint() public {
+        vm.expectRevert(abi.encodeWithSelector(SureLock.ZeroAddress.selector, SureLock.AddressParam.EntryPoint));
+        vm.prank(provider);
+        surelock.register(address(0), FEE, SLA_BLOCKS, COLLATERAL, minLifetime);
     }
 
     function testRegisterRejectsZeroFee() public {
         vm.expectRevert(abi.encodeWithSelector(SureLock.InvalidFee.selector, 0));
         vm.prank(provider);
-        surelock.register(0, SLA_BLOCKS, COLLATERAL, minLifetime);
+        surelock.register(entryPoint, 0, SLA_BLOCKS, COLLATERAL, minLifetime);
     }
 
     function testRegisterRejectsCollateralEqualToFee() public {
         vm.expectRevert(abi.encodeWithSelector(SureLock.InvalidCollateral.selector, FEE, FEE));
         vm.prank(provider);
-        surelock.register(FEE, SLA_BLOCKS, FEE, minLifetime);
+        surelock.register(entryPoint, FEE, SLA_BLOCKS, FEE, minLifetime);
     }
 
     function testRegisterRejectsCollateralBelowFee() public {
@@ -110,7 +117,7 @@ contract SureLockValidationTest is Test {
 
         vm.expectRevert(abi.encodeWithSelector(SureLock.InvalidCollateral.selector, collateral, FEE));
         vm.prank(provider);
-        surelock.register(FEE, SLA_BLOCKS, collateral, minLifetime);
+        surelock.register(entryPoint, FEE, SLA_BLOCKS, collateral, minLifetime);
     }
 
     function testRegisterRejectsLifetimeBelowMinimum() public {
@@ -118,7 +125,7 @@ contract SureLockValidationTest is Test {
 
         vm.expectRevert(abi.encodeWithSelector(SureLock.InvalidLifetime.selector, lifetime, minLifetime, maxLifetime));
         vm.prank(provider);
-        surelock.register(FEE, SLA_BLOCKS, COLLATERAL, lifetime);
+        surelock.register(entryPoint, FEE, SLA_BLOCKS, COLLATERAL, lifetime);
     }
 
     function testRegisterRejectsLifetimeAboveMaximum() public {
@@ -126,7 +133,7 @@ contract SureLockValidationTest is Test {
 
         vm.expectRevert(abi.encodeWithSelector(SureLock.InvalidLifetime.selector, lifetime, minLifetime, maxLifetime));
         vm.prank(provider);
-        surelock.register(FEE, SLA_BLOCKS, COLLATERAL, lifetime);
+        surelock.register(entryPoint, FEE, SLA_BLOCKS, COLLATERAL, lifetime);
     }
 
     function testDeactivateRejectsNonOwner() public {
@@ -252,7 +259,7 @@ contract SureLockValidationTest is Test {
         returns (uint256 registeredOfferId)
     {
         vm.prank(account);
-        registeredOfferId = surelock.register(feePerOp, slaBlocks, collateral, lifetime);
+        registeredOfferId = surelock.register(entryPoint, feePerOp, slaBlocks, collateral, lifetime);
     }
 
     function _commit(bytes32 userOpHash) internal returns (uint256 commitId) {

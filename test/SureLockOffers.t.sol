@@ -8,10 +8,13 @@ import {WatcherRegistry} from "src/WatcherRegistry.sol";
 contract SureLockOffersTest is Test {
     SureLock surelock;
     address provider = address(0xCAFE);
+    address entryPoint = address(0x4337);
+    address secondEntryPoint = address(0x7172);
 
     event OfferRegistered(
         uint256 indexed offerId,
         address indexed provider,
+        address indexed entryPoint,
         uint256 feePerOp,
         uint256 collateral,
         uint256 slaBlocks,
@@ -30,14 +33,15 @@ contract SureLockOffersTest is Test {
     function testRegisterStoresOffer() public {
         uint256 lifetime = surelock.MIN_LIFETIME();
 
-        vm.expectEmit(true, true, false, true, address(surelock));
-        emit OfferRegistered(1, provider, 0.01 ether, 0.03 ether, 20, block.number + lifetime);
+        vm.expectEmit(true, true, true, true, address(surelock));
+        emit OfferRegistered(1, provider, entryPoint, 0.01 ether, 0.03 ether, 20, block.number + lifetime);
 
         vm.prank(provider);
-        uint256 offerId = surelock.register(0.01 ether, 20, 0.03 ether, lifetime);
+        uint256 offerId = surelock.register(entryPoint, 0.01 ether, 20, 0.03 ether, lifetime);
 
         SureLock.Offer memory offer = surelock.getOffer(offerId);
         assertEq(offer.provider, provider);
+        assertEq(offer.entryPoint, entryPoint);
         assertFalse(offer.disabled);
         assertEq(offer.slaBlocks, 20);
         assertEq(offer.feePerOp, 0.01 ether);
@@ -59,20 +63,21 @@ contract SureLockOffersTest is Test {
                 SureLock.InvalidSlaBlocks.selector, minSlaBlocks - 1, minSlaBlocks, surelock.MAX_SLA_BLOCKS()
             )
         );
-        surelock.register(0.01 ether, minSlaBlocks - 1, 0.03 ether, lifetime);
+        surelock.register(entryPoint, 0.01 ether, minSlaBlocks - 1, 0.03 ether, lifetime);
     }
 
     function testDeactivateDisablesOffer() public {
         uint256 lifetime = surelock.MIN_LIFETIME();
 
         vm.startPrank(provider);
-        uint256 offerId = surelock.register(0.01 ether, 20, 0.03 ether, lifetime);
+        uint256 offerId = surelock.register(entryPoint, 0.01 ether, 20, 0.03 ether, lifetime);
         surelock.deactivate(offerId);
         vm.stopPrank();
 
         SureLock.Offer memory offer = surelock.getOffer(offerId);
 
         assertEq(offer.provider, provider);
+        assertEq(offer.entryPoint, entryPoint);
         assertEq(offer.feePerOp, 0.01 ether);
         assertEq(offer.collateral, 0.03 ether);
         assertEq(offer.slaBlocks, 20);
@@ -92,16 +97,17 @@ contract SureLockOffersTest is Test {
         address secondProvider = address(0xBEEF);
 
         vm.prank(provider);
-        surelock.register(0.01 ether, 20, 0.03 ether, lifetime);
+        surelock.register(entryPoint, 0.01 ether, 20, 0.03 ether, lifetime);
 
         vm.prank(secondProvider);
-        surelock.register(0.02 ether, 30, 0.05 ether, lifetime);
+        surelock.register(secondEntryPoint, 0.02 ether, 30, 0.05 ether, lifetime);
 
         SureLock.OfferView[] memory page = surelock.getOfferPage(1, 10);
 
         assertEq(page.length, 2);
         assertEq(page[0].offerId, 1);
         assertEq(page[0].provider, provider);
+        assertEq(page[0].entryPoint, entryPoint);
         assertEq(page[0].feePerOp, 0.01 ether);
         assertEq(page[0].collateral, 0.03 ether);
         assertEq(page[0].slaBlocks, 20);
@@ -112,6 +118,7 @@ contract SureLockOffersTest is Test {
 
         assertEq(page[1].offerId, 2);
         assertEq(page[1].provider, secondProvider);
+        assertEq(page[1].entryPoint, secondEntryPoint);
         assertEq(page[1].feePerOp, 0.02 ether);
         assertEq(page[1].collateral, 0.05 ether);
         assertEq(page[1].slaBlocks, 30);
@@ -126,8 +133,8 @@ contract SureLockOffersTest is Test {
         uint256 lifetime = surelock.MIN_LIFETIME();
 
         vm.startPrank(provider);
-        uint256 disabledOfferId = surelock.register(0.01 ether, 20, 0.03 ether, lifetime);
-        surelock.register(0.02 ether, 30, 0.05 ether, lifetime);
+        uint256 disabledOfferId = surelock.register(entryPoint, 0.01 ether, 20, 0.03 ether, lifetime);
+        surelock.register(secondEntryPoint, 0.02 ether, 30, 0.05 ether, lifetime);
         surelock.deactivate(disabledOfferId);
         vm.stopPrank();
 
@@ -138,6 +145,7 @@ contract SureLockOffersTest is Test {
         assertEq(page.length, 2);
         assertEq(page[0].offerId, 1);
         assertEq(page[0].provider, provider);
+        assertEq(page[0].entryPoint, entryPoint);
         assertEq(page[0].feePerOp, 0.01 ether);
         assertEq(page[0].collateral, 0.03 ether);
         assertEq(page[0].slaBlocks, 20);
@@ -147,6 +155,7 @@ contract SureLockOffersTest is Test {
 
         assertEq(page[1].offerId, 2);
         assertEq(page[1].provider, provider);
+        assertEq(page[1].entryPoint, secondEntryPoint);
         assertTrue(page[1].exists);
         assertFalse(page[1].disabled);
         assertFalse(page[1].active);
@@ -182,12 +191,13 @@ contract SureLockOffersTest is Test {
         uint256 maxLifetime = surelock.MAX_LIFETIME();
 
         vm.startPrank(provider);
-        uint256 offerId = surelock.register(0.01 ether, 20, 0.03 ether, minLifetime);
+        uint256 offerId = surelock.register(entryPoint, 0.01 ether, 20, 0.03 ether, minLifetime);
         vm.roll(100);
         surelock.renew(offerId, maxLifetime);
         vm.stopPrank();
 
         SureLock.Offer memory offer = surelock.getOffer(offerId);
+        assertEq(offer.entryPoint, entryPoint);
         assertFalse(offer.disabled);
         assertEq(offer.expiresAt, block.number + maxLifetime);
         assertTrue(surelock.isActive(offerId));
@@ -197,7 +207,7 @@ contract SureLockOffersTest is Test {
         uint256 lifetime = surelock.MIN_LIFETIME();
 
         vm.startPrank(provider);
-        uint256 offerId = surelock.register(0.01 ether, 20, 0.03 ether, lifetime);
+        uint256 offerId = surelock.register(entryPoint, 0.01 ether, 20, 0.03 ether, lifetime);
         surelock.deactivate(offerId);
         surelock.renew(offerId, lifetime);
         vm.stopPrank();

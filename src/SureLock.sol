@@ -36,11 +36,13 @@ contract SureLock is ISureLock, Ownable2Step, ReentrancyGuardTransient {
 
     enum AddressParam {
         WatcherRegistry,
+        EntryPoint,
         To
     }
 
     struct Offer {
         address provider;
+        address entryPoint;
         bool disabled;
         uint256 feePerOp;
         uint256 collateral;
@@ -51,6 +53,7 @@ contract SureLock is ISureLock, Ownable2Step, ReentrancyGuardTransient {
     struct OfferView {
         uint256 offerId;
         address provider;
+        address entryPoint;
         uint256 feePerOp;
         uint256 collateral;
         uint256 slaBlocks;
@@ -64,6 +67,7 @@ contract SureLock is ISureLock, Ownable2Step, ReentrancyGuardTransient {
         address user;
         address provider;
         uint256 offerId;
+        address entryPoint;
         bytes32 userOpHash;
         uint256 feePaid;
         uint256 collateral;
@@ -95,6 +99,7 @@ contract SureLock is ISureLock, Ownable2Step, ReentrancyGuardTransient {
         uint256 indexed offerId,
         address indexed user,
         address provider,
+        address entryPoint,
         bytes32 userOpHash,
         uint256 feePaid,
         uint256 collateral,
@@ -109,6 +114,7 @@ contract SureLock is ISureLock, Ownable2Step, ReentrancyGuardTransient {
     event OfferRegistered(
         uint256 indexed offerId,
         address indexed provider,
+        address indexed entryPoint,
         uint256 feePerOp,
         uint256 collateral,
         uint256 slaBlocks,
@@ -174,10 +180,11 @@ contract SureLock is ISureLock, Ownable2Step, ReentrancyGuardTransient {
         emit WatcherRegistryUpdated(oldRegistry, newWatcherRegistry);
     }
 
-    function register(uint256 feePerOp, uint256 slaBlocks, uint256 collateral, uint256 lifetime)
+    function register(address entryPoint, uint256 feePerOp, uint256 slaBlocks, uint256 collateral, uint256 lifetime)
         external
         returns (uint256 offerId)
     {
+        if (entryPoint == address(0)) revert ZeroAddress(AddressParam.EntryPoint);
         if (slaBlocks < MIN_SLA_BLOCKS || slaBlocks > MAX_SLA_BLOCKS) {
             revert InvalidSlaBlocks(slaBlocks, MIN_SLA_BLOCKS, MAX_SLA_BLOCKS);
         }
@@ -191,6 +198,7 @@ contract SureLock is ISureLock, Ownable2Step, ReentrancyGuardTransient {
 
         offers[offerId] = Offer({
             provider: msg.sender,
+            entryPoint: entryPoint,
             disabled: false,
             feePerOp: feePerOp,
             collateral: collateral,
@@ -198,7 +206,7 @@ contract SureLock is ISureLock, Ownable2Step, ReentrancyGuardTransient {
             expiresAt: block.number + lifetime
         });
 
-        emit OfferRegistered(offerId, msg.sender, feePerOp, collateral, slaBlocks, block.number + lifetime);
+        emit OfferRegistered(offerId, msg.sender, entryPoint, feePerOp, collateral, slaBlocks, block.number + lifetime);
     }
 
     function deactivate(uint256 offerId) external {
@@ -253,6 +261,7 @@ contract SureLock is ISureLock, Ownable2Step, ReentrancyGuardTransient {
             page[i] = OfferView({
                 offerId: offerId,
                 provider: offer.provider,
+                entryPoint: offer.entryPoint,
                 feePerOp: offer.feePerOp,
                 collateral: offer.collateral,
                 slaBlocks: offer.slaBlocks,
@@ -328,6 +337,7 @@ contract SureLock is ISureLock, Ownable2Step, ReentrancyGuardTransient {
             user: msg.sender,
             provider: offer.provider,
             offerId: offerId,
+            entryPoint: offer.entryPoint,
             userOpHash: userOpHash,
             feePaid: offer.feePerOp,
             collateral: offer.collateral,
@@ -345,6 +355,7 @@ contract SureLock is ISureLock, Ownable2Step, ReentrancyGuardTransient {
             offerId,
             msg.sender,
             offer.provider,
+            offer.entryPoint,
             userOpHash,
             offer.feePerOp,
             offer.collateral,
